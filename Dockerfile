@@ -14,4 +14,6 @@ COPY . .
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 ENV PORT=10000
-CMD ["python", "main.py"]
+
+# The -u flag ensures logs are sent to Render immediately (unbuffered)
+CMD ["python", "-u", "main.py"]
