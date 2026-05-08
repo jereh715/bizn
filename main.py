@@ -5,25 +5,32 @@ import asyncio
 import os
 import random
 import re
+import threading
 from urllib.parse import urljoin
+from flask import Flask
+
+# --- RENDER WEB SERVER SETUP ---
+app = Flask(__name__)
 
 # --- HARDCODED CONFIGURATION ---
 BASE_URL = "https://jiji.co.ke"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
-MIN_ADS = 50          # Only harvest sellers with 50+ ads
-WHALES_TARGET = 3     # How many whales to find per run
-PROD_LIMIT = 40       # How many products to scrape per whale
+MIN_ADS = 50          # Minimum ads to qualify as a "Whale"
+WHALES_TARGET = 3     # Number of sellers to harvest per run
+PROD_LIMIT = 40       # Products to scrape per seller
 DATA_FOLDER = "scraped_data"
 
+# --- SCRAPER LOGIC ---
+
 def clean_biz_name(raw_name):
-    # Removes "Verified" or "5y+" badges from the business name
+    """Cleans Jiji business names from 'Verified' or '5y+' badges."""
     match = re.search(r'(\d+\+?\s*(year|month|day))|Verified', raw_name, re.IGNORECASE)
     return raw_name[:match.start()].strip() if match else raw_name.strip()
 
 async def parse_deep_attributes(product_url):
-    # Scrapes the internal attributes and description of a specific product
+    """Scrapes internal attributes and descriptions for a product."""
     try:
         res = await asyncio.to_thread(requests.get, product_url, headers=HEADERS, timeout=10)
         soup = BeautifulSoup(res.text, "html.parser")
@@ -41,7 +48,7 @@ async def parse_deep_attributes(product_url):
         return [], ""
 
 async def harvest_inventory(seller_url, business_name, limit, no_ads):
-    # Fixed pagination logic to scrape seller products across multiple pages
+    """Scrapes products from a seller's page using pagination logic."""
     safe_name = "".join(x for x in business_name if x.isalnum() or x in " -_").strip()
     base_dir = os.path.join(DATA_FOLDER, "businesses", safe_name)
     img_dir = os.path.join(base_dir, "images")
@@ -75,7 +82,6 @@ async def harvest_inventory(seller_url, business_name, limit, no_ads):
                 p_link = urljoin(BASE_URL, a_tag['href'])
                 p_price = price_tag.get_text(strip=True).replace('KSh', '').replace(',', '').strip() if price_tag else "0"
                 
-                # Image Downloading
                 img_tag = item.find('img')
                 img_url = img_tag.get('src') or img_tag.get('data-src') if img_tag else None
                 index = len(products_data) + 1
@@ -103,15 +109,16 @@ async def harvest_inventory(seller_url, business_name, limit, no_ads):
             if new_items_found == 0: break
             page += 1
             await asyncio.sleep(random.uniform(1, 2)) 
-        except: break
+        except Exception as e:
+            print(f"      [!] Error during harvest: {e}")
+            break
 
-    # Save to JSON
     with open(os.path.join(base_dir, "products.json"), 'w', encoding='utf-8') as f: 
         json.dump(products_data, f, indent=4, ensure_ascii=False)
     return len(products_data)
 
 async def start_hunt():
-    # 1. Select random category from stage1.json
+    """Main discovery loop: picks a random category and finds 'Whales'."""
     if os.path.exists("stage1.json"):
         with open("stage1.json", "r") as f:
             categories = json.load(f)
@@ -123,10 +130,9 @@ async def start_hunt():
 
     found, page, seen = 0, 1, set()
 
-    # 2. Main Discovery Loop
     while found < WHALES_TARGET:
         cat_url = f"{BASE_URL}{selected_cat}?page={page}"
-        print(f"[*] Scanning {selected_cat} - Page {page}")
+        print(f"[*] Scanning Page {page}...")
         
         try:
             res = await asyncio.to_thread(requests.get, cat_url, headers=HEADERS, timeout=15)
@@ -140,7 +146,6 @@ async def start_hunt():
                 p_url = urljoin(BASE_URL, link)
                 
                 try:
-                    # Get the product page to find the seller link
                     p_res = await asyncio.to_thread(requests.get, p_url, headers=HEADERS, timeout=10)
                     p_soup = BeautifulSoup(p_res.text, "html.parser")
                     s_tag = p_soup.find("a", href=lambda x: x and ("/sellerpage" in x or "/shop/" in x))
@@ -150,7 +155,6 @@ async def start_hunt():
                         if s_url in seen: continue
                         seen.add(s_url)
 
-                        # Check for Whale Status (50+ ads)
                         s_res = await asyncio.to_thread(requests.get, s_url, headers=HEADERS, timeout=10)
                         s_soup = BeautifulSoup(s_res.text, "html.parser")
                         ads_count = sum(int(''.join(filter(str.isdigit, e.get_text())) or 0) for e in s_soup.find_all("div", class_="b-seller-top-categories__item-center"))
@@ -158,10 +162,10 @@ async def start_hunt():
                         if ads_count >= MIN_ADS:
                             name_tag = s_soup.find("div", class_="b-seller-info-block__name") or s_soup.find("h1")
                             b_name = clean_biz_name(name_tag.get_text(strip=True)) if name_tag else "Store"
-                            print(f"[WHALE FOUND] {b_name} with {ads_count} ads. Harvesting...")
+                            print(f"[WHALE FOUND] {b_name} with {ads_count} ads.")
                             
                             count = await harvest_inventory(s_url, b_name, PROD_LIMIT, ads_count)
-                            print(f"   -> Successfully saved {count} items for {b_name}")
+                            print(f"   -> Saved {count} items for {b_name}")
                             found += 1
                 except: continue
             page += 1
@@ -169,5 +173,18 @@ async def start_hunt():
 
     print("[FINISH] Hunt Session Complete.")
 
+# --- FLASK ROUTES ---
+
+@app.route('/')
+def home():
+    return "Dooka Scraper is Active.", 200
+
+@app.route('/run')
+def trigger():
+    """Triggers the scraper in a background thread."""
+    threading.Thread(target=lambda: asyncio.run(start_hunt())).start()
+    return "Scraper hunt started in the background!", 202
+
 if __name__ == "__main__":
-    asyncio.run(start_hunt())
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
