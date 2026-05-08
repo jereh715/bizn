@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Install core system dependencies
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     wget \
     libnss3 \
@@ -37,14 +37,14 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Force Playwright to use this folder for browsers
+# Pin the browser path
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/pw-browsers
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# INSTALL CHROMIUM AND THE HEADLESS SHELL
-RUN playwright install chromium --with-deps
+# FORCE install of the specific headless shell
+RUN python -m playwright install chromium --with-deps
 
 COPY . .
 
