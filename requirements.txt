@@ -1,5 +1,4 @@
-playwright
+playwright==1.59.0
 playwright-stealth
 flask
 beautifulsoup4
-requests
