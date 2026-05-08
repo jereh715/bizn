@@ -1,52 +1,19 @@
-FROM python:3.11-slim
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    wget \
-    libnss3 \
-    libnspr4 \
-    libasound2 \
-    libatk1.0-0 \
-    libc6 \
-    libcairo2 \
-    libcups2 \
-    libdbus-1-3 \
-    libexpat1 \
-    libfontconfig1 \
-    libgbm1 \
-    libgcc1 \
-    libglib2.0-0 \
-    libgtk-3-0 \
-    libpango-1.0-0 \
-    libpangocairo-1.0-0 \
-    libstdc++6 \
-    libx11-6 \
-    libx11-xcb1 \
-    libxcb1 \
-    libxcomposite1 \
-    libxcursor1 \
-    libxdamage1 \
-    libxext6 \
-    libxfixes3 \
-    libxi6 \
-    libxrandr2 \
-    libxrender1 \
-    libxss1 \
-    libxtst6 \
-    && rm -rf /var/lib/apt/lists/*
+# Use the official Microsoft Playwright image
+# This image ALREADY has Python, Chromium, and all dependencies installed
+FROM mcr.microsoft.com/playwright/python:v1.43.0-jammy
 
 WORKDIR /app
 
-# Pin the browser path
-ENV PLAYWRIGHT_BROWSERS_PATH=/app/pw-browsers
-
+# Copy requirements and install
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# FORCE install of the specific headless shell
-RUN python -m playwright install chromium --with-deps
-
+# Copy your code
 COPY . .
+
+# We NO LONGER need "playwright install" because it's already in the image!
+# We just need to tell Playwright where it is
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 ENV PORT=10000
 CMD ["python", "main.py"]
