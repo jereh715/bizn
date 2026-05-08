@@ -1,9 +1,8 @@
 FROM python:3.11-slim
 
-# Install system dependencies
+# Install system dependencies for Chromium
 RUN apt-get update && apt-get install -y \
     wget \
-    gnupg \
     libnss3 \
     libnspr4 \
     libasound2 \
@@ -38,18 +37,20 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Install Python requirements
+# Force Playwright to install and look for browsers in the app folder
+ENV PLAYWRIGHT_BROWSERS_PATH=/app/pw-browsers
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright browser
+# Install Chromium binaries
 RUN playwright install chromium
 RUN playwright install-deps chromium
 
 COPY . .
 
-# Explicitly set the port
+# Ensure the port is set for Render
 ENV PORT=10000
 
-# Tell Docker to run python directly, NOT gunicorn
+# Run the baby directly
 CMD ["python", "main.py"]
