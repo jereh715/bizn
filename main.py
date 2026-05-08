@@ -58,7 +58,7 @@ async def start_hunt():
         )
         page = await context.new_page()
         
-        # FIXED STEALTH BLOCK
+        # FIXED STEALTH BLOCKy
         print("[*] Applying Stealth...")
         try:
             await playwright_stealth.stealth_async(page)
