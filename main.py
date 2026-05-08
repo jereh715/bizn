@@ -10,7 +10,7 @@ from playwright.async_api import async_playwright
 import playwright_stealth
 from bs4 import BeautifulSoup
 
-# CRITICAL: Tell playwright where the browsers are inside the script
+# CRITICAL: Tell playwright where the browsers are
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/pw-browsers"
 
 app = Flask(__name__)
@@ -46,10 +46,16 @@ async def harvest_inventory(page, seller_url, business_name):
 
 async def start_hunt():
     async with async_playwright() as p:
-        # We use the standard chromium launch
+        # THE FIX: Added channel="chromium"
         browser = await p.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+            channel="chromium", 
+            args=[
+                "--no-sandbox", 
+                "--disable-setuid-sandbox", 
+                "--disable-dev-shm-usage",
+                "--disable-gpu"
+            ]
         )
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -91,7 +97,6 @@ def home():
 
 @app.route('/run')
 def trigger():
-    # Corrected threading call
     t = threading.Thread(target=lambda: asyncio.run(start_hunt()))
     t.start()
     return "Background Hunt Started", 202
