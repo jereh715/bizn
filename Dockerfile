@@ -1,8 +1,9 @@
-# Use the official Python image
-FROM python:3.10-slim
+FROM python:3.11-slim
 
-# Install system dependencies for Playwright
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
+    wget \
+    gnupg \
     libnss3 \
     libnspr4 \
     libasound2 \
@@ -15,8 +16,6 @@ RUN apt-get update && apt-get install -y \
     libfontconfig1 \
     libgbm1 \
     libgcc1 \
-    libgconf-2-4 \
-    libgdk-pixbuf2.0-0 \
     libglib2.0-0 \
     libgtk-3-0 \
     libpango-1.0-0 \
@@ -35,28 +34,22 @@ RUN apt-get update && apt-get install -y \
     libxrender1 \
     libxss1 \
     libxtst6 \
-    ca-certificates \
-    fonts-liberation \
-    libappindicator1 \
-    libnss3 \
-    lsb-release \
-    xdg-utils \
-    wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
 WORKDIR /app
 
-# Install Python dependencies
+# Install Python requirements
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright browsers
+# Install Playwright browser
 RUN playwright install chromium
 RUN playwright install-deps chromium
 
-# Copy your code
 COPY . .
 
-# Run the application
+# Explicitly set the port
+ENV PORT=10000
+
+# Tell Docker to run python directly, NOT gunicorn
 CMD ["python", "main.py"]
