@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Install system dependencies
+# Install system dependencies for Chromium
 RUN apt-get update && apt-get install -y \
     wget \
     libnss3 \
@@ -37,17 +37,20 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Pin the browser path
+# Force Playwright to install and look for browsers in the app folder
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/pw-browsers
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Chromium
+# Install Chromium binaries
 RUN playwright install chromium
 RUN playwright install-deps chromium
 
 COPY . .
 
+# Ensure the port is set for Render
 ENV PORT=10000
+
+# Run the baby directly
 CMD ["python", "main.py"]
