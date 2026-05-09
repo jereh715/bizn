@@ -2,7 +2,7 @@ import asyncio
 import os
 import threading
 import random
-from flask import Flask
+from flask import Flask, send_from_directory, render_template_string
 from playwright.async_api import async_playwright
 
 app = Flask(__name__)
@@ -26,8 +26,6 @@ async def start_hunt():
         )
         page = await context.new_page()
 
-        # Stealth is skipped as requested to avoid 'module' errors
-        
         categories = ["/mobile-phones", "/cars", "/electronics", "/home-appliances"]
         selected_cat = random.choice(categories)
         target_url = f"{BASE_URL}{selected_cat}"
@@ -35,10 +33,7 @@ async def start_hunt():
         print(f"[*] Targeting: {target_url}")
 
         try:
-            # Using 'load' instead of 'networkidle' to avoid timeouts on Render
             await page.goto(target_url, wait_until="load", timeout=60000)
-            
-            # Get the raw HTML content
             html_content = await page.content()
             
             # Save it to a file
@@ -61,20 +56,38 @@ async def start_hunt():
 
 @app.route('/')
 def home():
-    return "Dooka HTML Grabber is Active", 200
+    return "Dooka HTML Grabber is Active. Go to /view to see files.", 200
 
 @app.route('/run')
 def trigger():
-    """Endpoint to trigger the HTML grab in the background."""
     t = threading.Thread(target=lambda: asyncio.run(start_hunt()))
     t.start()
     return "HTML Grab Started. Check logs.", 202
 
-# New route to see if we actually got the data
+# --- NEW VIEW & DOWNLOAD ROUTES ---
+
 @app.route('/view')
 def view():
-    files = os.listdir(DATA_FOLDER)
-    return {"files_in_storage": files}, 200
+    """Displays a simple list of clickable links to download the files."""
+    try:
+        files = os.listdir(DATA_FOLDER)
+        if not files:
+            return "No files found in storage yet. Run /run first.", 200
+        
+        # Create a simple HTML list of links
+        links_html = "".join([f'<li><a href="/download/{f}">{f}</a></li>' for f in files])
+        return render_template_string(f"""
+            <h1>Scraped Data Files</h1>
+            <ul>{links_html}</ul>
+            <p><a href="/">Back Home</a></p>
+        """), 200
+    except Exception as e:
+        return f"Error accessing storage: {str(e)}", 500
+
+@app.route('/download/<path:filename>')
+def download(filename):
+    """Allows downloading the actual file."""
+    return send_from_directory(DATA_FOLDER, filename, as_attachment=False)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
