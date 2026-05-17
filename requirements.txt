@@ -1,4 +1,7 @@
 playwright==1.59.0
-playwright-stealth
-flask
-beautifulsoup4
+playwright-stealth==1.0.6
+flask==3.0.3
+flask-sock==0.7.0
+beautifulsoup4==4.12.3
+gunicorn==22.0.0
+gevent==24.2.1
