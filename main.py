@@ -2,14 +2,16 @@ import asyncio
 import os
 import threading
 import random
-import string
-import functools
 import json
 import re
-from flask import Flask, request, Response, render_template_string
+import functools
+from flask import Flask, request, render_template_string
+from flask_sock import Sock
 from playwright.async_api import async_playwright
 
 app = Flask(__name__)
+# Initialize Flask-Sock for WebSocket handling
+sock = Sock(app)
 
 # --- CONFIGURATION ---
 HOMEPAGE_URL = "https://www.hostafrica.co.ke/"
@@ -230,7 +232,7 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
         log_queue.put_nowait("DONE")
 
 
-# --- FLASK HTML INTERFACES ---
+# --- FLASK DASHBOARD INTERFACE (UPDATED FOR WEBSOCKETS) ---
 
 DASHBOARD_HTML = """
 <!DOCTYPE html>
@@ -316,23 +318,27 @@ DASHBOARD_HTML = """
             submitBtn.style.background = '#64748b';
             submitBtn.innerText = 'Automation Running...';
             resultCard.style.display = 'none';
-            term.innerHTML = "<b>[SYSTEM START] Initializing Live Connection To Pipeline Monitor Stream...</b><br>";
+            term.innerHTML = "<b>[SYSTEM START] Initializing Live Connection To WebSocket Monitor Stream...</b><br>";
 
             const domain = document.getElementById('domain').value;
             const email = document.getElementById('email').value;
             const phone = document.getElementById('phone').value;
 
-            const eventSource = new EventSource(`/stream?domain=${encodeURIComponent(domain)}&email=${encodeURIComponent(email)}&phone=${encodeURIComponent(phone)}`);
+            // Compute correct standard ws:// or secure wss:// protocol context seamlessly
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/stream?domain=${encodeURIComponent(domain)}&email=${encodeURIComponent(email)}&phone=${encodeURIComponent(phone)}`;
+            
+            const socket = new WebSocket(wsUrl);
 
-            eventSource.onmessage = function(event) {
+            socket.onmessage = function(event) {
                 const data = event.data;
 
                 if (data === "DONE") {
-                    eventSource.close();
+                    socket.close();
                     submitBtn.disabled = false;
                     submitBtn.style.background = '#2563eb';
                     submitBtn.innerText = 'Launch Order Automation Pipeline';
-                    term.innerHTML += "<b>[SYSTEM END] Connection completed cleanly. Terminal Closed.</b><br>";
+                    term.innerHTML += "<b>[SYSTEM END] Connection completed cleanly. WebSocket Channel Closed.</b><br>";
                     term.scrollTop = term.scrollHeight;
                 } 
                 else if (data.startsWith("FINAL_RESULT:")) {
@@ -355,12 +361,21 @@ DASHBOARD_HTML = """
                 }
             };
 
-            eventSource.onerror = function() {
-                term.innerHTML += "<span style='color:#ef4444;'>[ERROR] EventSource failed or lost connection channel.</span><br>";
-                eventSource.close();
+            socket.onerror = function() {
+                term.innerHTML += "<span style='color:#ef4444;'>[ERROR] WebSocket failed or lost connection channel.</span><br>";
+                socket.close();
                 submitBtn.disabled = false;
                 submitBtn.style.background = '#2563eb';
                 submitBtn.innerText = 'Launch Order Automation Pipeline';
+            };
+            
+            socket.onclose = function() {
+                // Failsafe catch if connection drops unexpectedly before "DONE" token drops
+                if(submitBtn.disabled === true) {
+                    submitBtn.disabled = false;
+                    submitBtn.style.background = '#2563eb';
+                    submitBtn.innerText = 'Launch Order Automation Pipeline';
+                }
             };
         });
     </script>
@@ -368,16 +383,31 @@ DASHBOARD_HTML = """
 </html>
 """
 
+# --- HTTP ROUTES & WEBSOCKET ENDPOINTS ---
+
 @app.route('/')
 def load_dashboard_ui():
     return render_template_string(DASHBOARD_HTML)
 
-@app.route('/stream')
-def logs_sse_stream_endpoint():
+@app.route('/healthz')
+def keep_alive_health_check():
+    """
+    Lightweight health endpoint called by external cron jobs (e.g., UptimeRobot)
+    to keep the Render instance awake without triggering browser environments.
+    """
+    global LOOP
+    loop_status = "ONLINE" if (LOOP and LOOP.is_running()) else "OFFLINE"
+    return {"status": "HEALTHY", "background_loop": loop_status}, 200
+
+@sock.route('/ws/stream')
+def logs_websocket_stream_endpoint(ws):
+    """Handles continuous, bi-directional live tracking via standard WebSockets."""
     global LOOP
     if not LOOP or not LOOP.is_running():
-        return "Background environment loop offline.", 500
+        ws.send("ERROR: Background environment loop offline.")
+        return
 
+    # Extract configuration variables out of the upgrade request arguments matrix
     custom_domain = request.args.get('domain', '').strip()
     custom_email = request.args.get('email', '').strip()
     custom_phone = request.args.get('phone', '+254124567890').strip()
@@ -389,21 +419,26 @@ def logs_sse_stream_endpoint():
 
     log_queue = asyncio.Queue()
 
+    # Ship workflow execution routine task off onto our dedicated concurrent thread loop safely
     asyncio.run_coroutine_threadsafe(
         stream_integrated_workflow(log_queue, custom_domain, custom_email, custom_phone),
         LOOP
     )
 
-    def event_stream_generator():
-        while True:
-            future = asyncio.run_coroutine_threadsafe(log_queue.get(), LOOP)
-            log_line = future.result()
+    # Continuously pump generated log messages from queue space right up over WebSocket pipe 
+    while True:
+        future = asyncio.run_coroutine_threadsafe(log_queue.get(), LOOP)
+        log_line = future.result()
+        
+        try:
+            ws.send(log_line)
+        except Exception:
+            # Catch instances where a user shuts down browser tabs mid-stream
+            print("[*] Connection closed downstream by customer interface environment.")
+            break
             
-            yield f"data: {log_line}\n\n"
-            if log_line == "DONE":
-                break
-
-    return Response(event_stream_generator(), mimetype='text/event-stream')
+        if log_line == "DONE":
+            break
 
 
 if __name__ == "__main__":
@@ -411,4 +446,5 @@ if __name__ == "__main__":
     t.start()
     
     port = int(os.environ.get("PORT", 10000))
+    # Flask-Sock is compatible with standard development execution 
     app.run(host='0.0.0.0', port=port, use_reloader=False)
