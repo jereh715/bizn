@@ -5,6 +5,7 @@ import random
 import json
 import re
 import functools
+import time
 from flask import Flask, request, render_template_string
 from flask_sock import Sock
 from playwright.async_api import async_playwright
@@ -44,6 +45,21 @@ async def init_global_browser():
         ]
     )
     print("[SUCCESS] Global headless browser is ready for remote execution pipelines.")
+
+def ensure_background_loop_is_alive():
+    """Failsafe manager to boot the background thread if Gunicorn drops it inside Docker."""
+    global LOOP
+    if LOOP is None or not LOOP.is_running():
+        print("[!] Background event loop detected as OFFLINE. Spawning new initialization thread...")
+        t = threading.Thread(target=start_global_loop, daemon=True)
+        t.start()
+        
+        # Give the thread up to 3 seconds to spin up and register the event loop
+        for _ in range(3):
+            if LOOP and LOOP.is_running():
+                print("[SUCCESS] Background event loop successfully recovered and is now ONLINE.")
+                break
+            time.sleep(1)
 
 def retry_async_action(retries=3, delay=5):
     """Decorator to retry asynchronous steps if selectors or actions fail."""
@@ -177,7 +193,7 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
 
     log_queue.put_nowait("[*] Spawning clean localized browser context...")
     context = await GLOBAL_BROWSER.new_context(
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/124.0.0.0 Safari/537.36",
         viewport={'width': 1920, 'height': 1080}
     )
     
@@ -324,7 +340,6 @@ DASHBOARD_HTML = """
             const email = document.getElementById('email').value;
             const phone = document.getElementById('phone').value;
 
-            // Compute correct standard ws:// or secure wss:// protocol context seamlessly
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${protocol}//${window.location.host}/ws/stream?domain=${encodeURIComponent(domain)}&email=${encodeURIComponent(email)}&phone=${encodeURIComponent(phone)}`;
             
@@ -370,7 +385,6 @@ DASHBOARD_HTML = """
             };
             
             socket.onclose = function() {
-                // Failsafe catch if connection drops unexpectedly before "DONE" token drops
                 if(submitBtn.disabled === true) {
                     submitBtn.disabled = false;
                     submitBtn.style.background = '#2563eb';
@@ -387,14 +401,16 @@ DASHBOARD_HTML = """
 
 @app.route('/')
 def load_dashboard_ui():
+    ensure_background_loop_is_alive()
     return render_template_string(DASHBOARD_HTML)
 
 @app.route('/healthz')
 def keep_alive_health_check():
     """
-    Lightweight health endpoint called by external cron jobs (e.g., UptimeRobot)
-    to keep the Render instance awake without triggering browser environments.
+    Lightweight health endpoint called by external cron jobs.
+    Forces the background loop back online if Docker throttles the main process.
     """
+    ensure_background_loop_is_alive()
     global LOOP
     loop_status = "ONLINE" if (LOOP and LOOP.is_running()) else "OFFLINE"
     return {"status": "HEALTHY", "background_loop": loop_status}, 200
@@ -402,12 +418,12 @@ def keep_alive_health_check():
 @sock.route('/ws/stream')
 def logs_websocket_stream_endpoint(ws):
     """Handles continuous, bi-directional live tracking via standard WebSockets."""
+    ensure_background_loop_is_alive()
     global LOOP
     if not LOOP or not LOOP.is_running():
         ws.send("ERROR: Background environment loop offline.")
         return
 
-    # Extract configuration variables out of the upgrade request arguments matrix
     custom_domain = request.args.get('domain', '').strip()
     custom_email = request.args.get('email', '').strip()
     custom_phone = request.args.get('phone', '+254124567890').strip()
@@ -419,13 +435,11 @@ def logs_websocket_stream_endpoint(ws):
 
     log_queue = asyncio.Queue()
 
-    # Ship workflow execution routine task off onto our dedicated concurrent thread loop safely
     asyncio.run_coroutine_threadsafe(
         stream_integrated_workflow(log_queue, custom_domain, custom_email, custom_phone),
         LOOP
     )
 
-    # Continuously pump generated log messages from queue space right up over WebSocket pipe 
     while True:
         future = asyncio.run_coroutine_threadsafe(log_queue.get(), LOOP)
         log_line = future.result()
@@ -433,7 +447,6 @@ def logs_websocket_stream_endpoint(ws):
         try:
             ws.send(log_line)
         except Exception:
-            # Catch instances where a user shuts down browser tabs mid-stream
             print("[*] Connection closed downstream by customer interface environment.")
             break
             
@@ -442,9 +455,5 @@ def logs_websocket_stream_endpoint(ws):
 
 
 if __name__ == "__main__":
-    t = threading.Thread(target=start_global_loop, daemon=True)
-    t.start()
-    
-    port = int(os.environ.get("PORT", 10000))
-    # Flask-Sock is compatible with standard development execution 
-    app.run(host='0.0.0.0', port=port, use_reloader=False)
+    # Local runtime initialization
+    start_global_loop()
