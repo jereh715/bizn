@@ -180,13 +180,12 @@ async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_
     
     return recovered_password
 
-# --- NEW STK PUSH PIPELINE ACTION FOR INVOICE PAGE ---
+# --- STK PUSH ACTION ---
 @retry_async_action(retries=3, delay=5)
 async def trigger_mpesa_express_stk_push(log_queue, page):
     """Targets the green 'Pay Now' invoice button to launch the overlay modal and dispatches the STK push request."""
     log_queue.put_nowait("[*] Locating Invoice Portal Pay Now anchor action selector...")
     
-    # Target the specific contextual anchor element using its unique data attribute pointers
     invoice_pay_now = page.locator('a[data-target="#modalLoginForm"]').first
     await invoice_pay_now.wait_for(state="visible", timeout=15000)
     await invoice_pay_now.scroll_into_view_if_needed()
@@ -194,7 +193,6 @@ async def trigger_mpesa_express_stk_push(log_queue, page):
     log_queue.put_nowait("[*] Clicking Invoice Pay Now button to launch MPESA overlay interface...")
     await invoice_pay_now.click()
     
-    # Wait for the modal view panel content layout fields to settle into visibility state
     send_request_btn = page.locator('button#send-request').first
     await send_request_btn.wait_for(state="visible", timeout=15000)
     
@@ -203,8 +201,8 @@ async def trigger_mpesa_express_stk_push(log_queue, page):
     log_queue.put_nowait("[SUCCESS] M-PESA Express STK Push handshake sent successfully out to handset device!")
 
 
-async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom_phone):
-    """Runs the unified automated sequence and securely releases resources in all exit states."""
+async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom_phone, payment_method):
+    """Runs the unified automated sequence and dynamically branches based on the payment method choice."""
     global GLOBAL_BROWSER
     if not GLOBAL_BROWSER:
         log_queue.put_nowait("ERROR: Global browser instance is not initialized.")
@@ -254,14 +252,17 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
                 break
         
         if is_invoice_found:
-            # Execute the newly integrated overlay modal clicking workflow
-            await trigger_mpesa_express_stk_push(log_queue, page)
-            
-            # Keep transaction tracking metrics live for a fixed 45-second duration to allow on-screen PIN entries
-            log_queue.put_nowait("[*] Commencing 45-second countdown runtime loop window for manual M-PESA handset confirmation...")
-            for seconds_left in range(45, 0, -5):
-                log_queue.put_nowait(f"[WAITING] Holding automation link open. Channel shuts down in {seconds_left} seconds...")
-                await asyncio.sleep(5)
+            # Dynamic operational routing selection based on initial payload parameter configuration
+            if payment_method == "stk":
+                log_queue.put_nowait("[*] User configuration targeted: M-PESA Express (STK Prompt Mode)")
+                await trigger_mpesa_express_stk_push(log_queue, page)
+                
+                log_queue.put_nowait("[*] Commencing 45-second countdown runtime loop window for manual M-PESA handset confirmation...")
+                for seconds_left in range(45, 0, -5):
+                    log_queue.put_nowait(f"[WAITING] Holding automation link open. Channel shuts down in {seconds_left} seconds...")
+                    await asyncio.sleep(5)
+            else:
+                log_queue.put_nowait("[SUCCESS] User configuration targeted: Manual Paybill Presentation. Skipping automated STK phone injection loops.")
         else:
             log_queue.put_nowait("[WARN] Failed to intercept structural invoice panel context within time boundaries.")
         
@@ -271,7 +272,8 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
             "email": custom_email,
             "password": password_captured,
             "invoice_url": invoice_url if invoice_url else "Timeout Redirect",
-            "invoice_id": invoice_id
+            "invoice_id": invoice_id,
+            "payment_method": payment_method
         }
         log_queue.put_nowait(f"FINAL_RESULT:{json.dumps(final_payload)}")
 
@@ -279,12 +281,11 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
         log_queue.put_nowait(f"[CRITICAL FAILURE] Integrated pipeline collapsed: {workflow_error}")
     
     finally:
-        # Guarantees browser engine memory contexts close in all conditions
         await context.close()
         log_queue.put_nowait("DONE")
 
 
-# --- FLASK DASHBOARD INTERFACE (UPDATED FOR WEBSOCKETS) ---
+# --- FLASK DASHBOARD INTERFACE WITH DYNAMIC PAYBILL / STK LAYOUT CORES ---
 
 DASHBOARD_HTML = """
 <!DOCTYPE html>
@@ -295,9 +296,10 @@ DASHBOARD_HTML = """
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; margin: 0; padding: 40px; color: #1e293b; }
         .container { max-width: 900px; margin: 0 auto; background: #ffffff; padding: 30px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
         h2 { margin-top: 0; color: #0f172a; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-bottom: 20px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px; }
+        .row-three { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-bottom: 20px; }
         label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; color: #475569; }
-        input { width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; font-size: 14px; }
+        input, select { width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; font-size: 14px; background: #fff; }
         button { background: #2563eb; color: white; border: none; padding: 12px 24px; font-size: 15px; font-weight: 600; border-radius: 6px; cursor: pointer; transition: background 0.2s; width: 100%; }
         button:hover { background: #1d4ed8; }
         #terminal { background: #0f172a; color: #38bdf8; font-family: "Courier New", Courier, monospace; padding: 20px; border-radius: 8px; height: 260px; overflow-y: auto; margin-top: 25px; font-size: 13px; line-height: 1.5; box-shadow: inset 0 2px 4px 0 rgb(0 0 0 / 0.5); }
@@ -312,13 +314,16 @@ DASHBOARD_HTML = """
         .mpesa-title { font-weight: bold; font-size: 16px; margin-bottom: 10px; color: #166534; display: flex; align-items: center; }
         .mpesa-step { font-size: 14px; margin-bottom: 4px; padding-left: 5px; }
         .mpesa-highlight { background: #bbf7d0; color: #166534; padding: 1px 5px; border-radius: 3px; font-weight: bold; font-family: monospace; }
+        
+        .method-block { display: none; margin-top: 10px; }
+        .active-block { display: block !important; }
     </style>
 </head>
 <body>
     <div class="container">
         <h2>HostAfrica Automation Workflow Dashboard</h2>
         <form id="automationForm">
-            <div class="grid">
+            <div class="row-three">
                 <div>
                     <label>SLD Domain Name</label>
                     <input type="text" name="domain" id="domain" placeholder="e.g. kondiyi" required>
@@ -332,6 +337,15 @@ DASHBOARD_HTML = """
                     <input type="text" name="phone" id="phone" value="+254712345678" required>
                 </div>
             </div>
+            
+            <div style="margin-bottom: 25px;">
+                <label>Preferred M-PESA Processing Mode</label>
+                <select id="paymentMethod" required>
+                    <option value="stk" selected>M-PESA Express (Automatic STK Push Prompt Window)</option>
+                    <option value="paybill">Lipa Na M-PESA Paybill (Manual Directory Step Fallback)</option>
+                </select>
+            </div>
+            
             <button type="submit" id="submitBtn">Launch Order Automation Pipeline</button>
         </form>
 
@@ -343,15 +357,24 @@ DASHBOARD_HTML = """
             <div class="res-row"><strong>Final Invoice Link:</strong> <span id="resInvoice"></span></div>
             
             <div class="mpesa-container">
-                <div class="mpesa-title">💸 Lipa na M-PESA Micro-Payment Gate Instructions</div>
-                <div class="mpesa-step">1. Go to Safaricom Menu</div>
-                <div class="mpesa-step">2. Select <b>M-PESA</b></div>
-                <div class="mpesa-step">3. Select <b>Lipa na MPESA</b></div>
-                <div class="mpesa-step">4. Select <b>Paybill</b></div>
-                <div class="mpesa-step">5. Enter Business No: <span class="mpesa-highlight">890500</span></div>
-                <div class="mpesa-step">6. Enter Account No: <span class="mpesa-highlight" id="mpesaAccount">Loading...</span></div>
-                <div class="mpesa-step">7. Enter Amount (without commas): <span class="mpesa-highlight">462.84</span></div>
-                <div class="mpesa-step">8. Enter your PIN and Confirm.</div>
+                <div class="mpesa-title">💸 M-PESA Gateway Router Operations Matrix</div>
+                
+                <div id="blockStk" class="method-block">
+                    <div style="font-weight: bold; margin-bottom: 6px; color: #166534;">Prompt Route Status:</div>
+                    <div class="mpesa-step">An M-PESA SIM Toolkit interaction interface window popup layout handshake was transmitted down to phone line <code id="confirmPhone"></code>. Please verify your PIN entry within the timeframe parameters.</div>
+                </div>
+                
+                <div id="blockPaybill" class="method-block">
+                    <div style="font-weight: bold; margin-bottom: 6px; color: #166534;">Manual Directory Step Fallback Strategy:</div>
+                    <div class="mpesa-step">1. Go to Safaricom Menu</div>
+                    <div class="mpesa-step">2. Select <b>M-PESA</b></div>
+                    <div class="mpesa-step">3. Select <b>Lipa na MPESA</b></div>
+                    <div class="mpesa-step">4. Select <b>Paybill</b></div>
+                    <div class="mpesa-step">5. Enter Business No: <span class="mpesa-highlight">890500</span></div>
+                    <div class="mpesa-step">6. Enter Account No: <span class="mpesa-highlight" id="mpesaAccount">Loading...</span></div>
+                    <div class="mpesa-step">7. Enter Amount (without commas): <span class="mpesa-highlight">462.84</span></div>
+                    <div class="mpesa-step">8. Enter your PIN and Confirm.</div>
+                </div>
             </div>
         </div>
 
@@ -375,9 +398,11 @@ DASHBOARD_HTML = """
             const domain = document.getElementById('domain').value;
             const email = document.getElementById('email').value;
             const phone = document.getElementById('phone').value;
+            const method = document.getElementById('paymentMethod').value;
 
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws/stream?domain=${encodeURIComponent(domain)}&email=${encodeURIComponent(email)}&phone=${encodeURIComponent(phone)}`;
+            // Included the context configuration payload data flags mapping variables into endpoint requests routing hooks
+            const wsUrl = `${protocol}//${window.location.host}/ws/stream?domain=${encodeURIComponent(domain)}&email=${encodeURIComponent(email)}&phone=${encodeURIComponent(phone)}&payment_method=${encodeURIComponent(method)}`;
             
             const socket = new WebSocket(wsUrl);
 
@@ -398,12 +423,24 @@ DASHBOARD_HTML = """
                     document.getElementById('resEmail').innerText = payload.email;
                     document.getElementById('resPassword').innerText = payload.password;
                     document.getElementById('mpesaAccount').innerText = payload.invoice_id;
+                    document.getElementById('confirmPhone').innerText = payload.phone || phone;
                     
                     if (payload.invoice_url.startsWith("http")) {
                         document.getElementById('resInvoice').innerHTML = `<a href="${payload.invoice_url}" target="_blank">${payload.invoice_url}</a>`;
                     } else {
                         document.getElementById('resInvoice').innerText = payload.invoice_url;
                     }
+                    
+                    // Show or hide specific structural guidance segments dynamically depending on response flags
+                    document.getElementById('blockStk').classList.remove('active-block');
+                    document.getElementById('blockPaybill').classList.remove('active-block');
+                    
+                    if(payload.payment_method === 'stk') {
+                        document.getElementById('blockStk').classList.add('active-block');
+                    } else {
+                        document.getElementById('blockPaybill').classList.add('active-block');
+                    }
+                    
                     resultCard.style.display = 'block';
                 } 
                 else {
@@ -457,6 +494,7 @@ def logs_websocket_stream_endpoint(ws):
     custom_domain = request.args.get('domain', '').strip()
     custom_email = request.args.get('email', '').strip()
     custom_phone = request.args.get('phone', '+254712345678').strip()
+    payment_method = request.args.get('payment_method', 'stk').strip()
 
     if not custom_domain:
         custom_domain = f"testdomain{random.randint(1000, 9999)}"
@@ -466,7 +504,7 @@ def logs_websocket_stream_endpoint(ws):
     log_queue = asyncio.Queue()
 
     asyncio.run_coroutine_threadsafe(
-        stream_integrated_workflow(log_queue, custom_domain, custom_email, custom_phone),
+        stream_integrated_workflow(log_queue, custom_domain, custom_email, custom_phone, payment_method),
         LOOP
     )
 
