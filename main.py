@@ -11,7 +11,6 @@ from flask_sock import Sock
 from playwright.async_api import async_playwright
 
 app = Flask(__name__)
-# Initialize Flask-Sock for WebSocket handling
 sock = Sock(app)
 
 # --- CONFIGURATION ---
@@ -33,7 +32,6 @@ async def init_global_browser():
     print("[*] Initializing Global Browser Instance (Headless Mode: ON)...")
     GLOBAL_P = await async_playwright().start()
     
-    # Optimized for headless hosting environments like Render
     GLOBAL_BROWSER = await GLOBAL_P.chromium.launch(
         headless=True,
         args=[
@@ -54,7 +52,6 @@ def ensure_background_loop_is_alive():
         t = threading.Thread(target=start_global_loop, daemon=True)
         t.start()
         
-        # Give the thread up to 3 seconds to spin up and register the event loop
         for _ in range(3):
             if LOOP and LOOP.is_running():
                 print("[SUCCESS] Background event loop successfully recovered and is now ONLINE.")
@@ -183,6 +180,29 @@ async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_
     
     return recovered_password
 
+# --- NEW STK PUSH PIPELINE ACTION FOR INVOICE PAGE ---
+@retry_async_action(retries=3, delay=5)
+async def trigger_mpesa_express_stk_push(log_queue, page):
+    """Targets the green 'Pay Now' invoice button to launch the overlay modal and dispatches the STK push request."""
+    log_queue.put_nowait("[*] Locating Invoice Portal Pay Now anchor action selector...")
+    
+    # Target the specific contextual anchor element using its unique data attribute pointers
+    invoice_pay_now = page.locator('a[data-target="#modalLoginForm"]').first
+    await invoice_pay_now.wait_for(state="visible", timeout=15000)
+    await invoice_pay_now.scroll_into_view_if_needed()
+    
+    log_queue.put_nowait("[*] Clicking Invoice Pay Now button to launch MPESA overlay interface...")
+    await invoice_pay_now.click()
+    
+    # Wait for the modal view panel content layout fields to settle into visibility state
+    send_request_btn = page.locator('button#send-request').first
+    await send_request_btn.wait_for(state="visible", timeout=15000)
+    
+    log_queue.put_nowait("[*] STK Overlay loaded. Dispatched click event onto 'Send Request to Phone' trigger action...")
+    await send_request_btn.click()
+    log_queue.put_nowait("[SUCCESS] M-PESA Express STK Push handshake sent successfully out to handset device!")
+
+
 async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom_phone):
     """Runs the unified automated sequence and securely releases resources in all exit states."""
     global GLOBAL_BROWSER
@@ -216,6 +236,8 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
         log_queue.put_nowait("[*] Awaiting payment processing system confirmation redirect...")
         invoice_url = ""
         invoice_id = "UNKNOWN"
+        is_invoice_found = False
+        
         for _ in range(30):
             await asyncio.sleep(1)
             current_url = page.url
@@ -227,7 +249,21 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
                 if id_match:
                     invoice_id = id_match.group(1)
                     log_queue.put_nowait(f"[*] Parsed Invoice Core ID Reference: {invoice_id}")
+                
+                is_invoice_found = True
                 break
+        
+        if is_invoice_found:
+            # Execute the newly integrated overlay modal clicking workflow
+            await trigger_mpesa_express_stk_push(log_queue, page)
+            
+            # Keep transaction tracking metrics live for a fixed 45-second duration to allow on-screen PIN entries
+            log_queue.put_nowait("[*] Commencing 45-second countdown runtime loop window for manual M-PESA handset confirmation...")
+            for seconds_left in range(45, 0, -5):
+                log_queue.put_nowait(f"[WAITING] Holding automation link open. Channel shuts down in {seconds_left} seconds...")
+                await asyncio.sleep(5)
+        else:
+            log_queue.put_nowait("[WARN] Failed to intercept structural invoice panel context within time boundaries.")
         
         final_payload = {
             "status": "COMPLETE",
@@ -406,11 +442,6 @@ def load_dashboard_ui():
 
 @app.route('/healthz')
 def keep_alive_health_check():
-    """
-    Lightweight health endpoint called by external cron jobs.
-    Forces the background loop back online if Docker throttles the main process.
-    Returns 0 bytes payload data to fully prevent cron dashboard size limit failures.
-    """
     ensure_background_loop_is_alive()
     return "", 200
 
@@ -454,5 +485,4 @@ def logs_websocket_stream_endpoint(ws):
 
 
 if __name__ == "__main__":
-    # Local runtime initialization
     start_global_loop()
