@@ -184,7 +184,7 @@ async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_
     return recovered_password
 
 async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom_phone):
-    """Runs the unified automated sequence and logs status steps in real-time to the queue channel."""
+    """Runs the unified automated sequence and securely releases resources in all exit states."""
     global GLOBAL_BROWSER
     if not GLOBAL_BROWSER:
         log_queue.put_nowait("ERROR: Global browser instance is not initialized.")
@@ -229,8 +229,6 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
                     log_queue.put_nowait(f"[*] Parsed Invoice Core ID Reference: {invoice_id}")
                 break
         
-        await context.close()
-        
         final_payload = {
             "status": "COMPLETE",
             "domain": domain_name,
@@ -240,11 +238,13 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
             "invoice_id": invoice_id
         }
         log_queue.put_nowait(f"FINAL_RESULT:{json.dumps(final_payload)}")
-        log_queue.put_nowait("DONE")
 
     except Exception as workflow_error:
-        await context.close()
         log_queue.put_nowait(f"[CRITICAL FAILURE] Integrated pipeline collapsed: {workflow_error}")
+    
+    finally:
+        # Guarantees browser engine memory contexts close in all conditions
+        await context.close()
         log_queue.put_nowait("DONE")
 
 
@@ -409,11 +409,10 @@ def keep_alive_health_check():
     """
     Lightweight health endpoint called by external cron jobs.
     Forces the background loop back online if Docker throttles the main process.
+    Returns 0 bytes payload data to fully prevent cron dashboard size limit failures.
     """
     ensure_background_loop_is_alive()
-    global LOOP
-    loop_status = "ONLINE" if (LOOP and LOOP.is_running()) else "OFFLINE"
-    return {"status": "HEALTHY", "background_loop": loop_status}, 200
+    return "", 200
 
 @sock.route('/ws/stream')
 def logs_websocket_stream_endpoint(ws):
@@ -426,7 +425,7 @@ def logs_websocket_stream_endpoint(ws):
 
     custom_domain = request.args.get('domain', '').strip()
     custom_email = request.args.get('email', '').strip()
-    custom_phone = request.args.get('phone', '+254124567890').strip()
+    custom_phone = request.args.get('phone', '+254712345678').strip()
 
     if not custom_domain:
         custom_domain = f"testdomain{random.randint(1000, 9999)}"
