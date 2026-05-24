@@ -138,7 +138,7 @@ async def step_3_click_pay_and_bypass_popup(log_queue, page):
     log_queue.put_nowait("[SUCCESS] Step 3 complete: Pop-up bypassed via 'no, thank you'. Proceeding to form...")
 
 @retry_async_action(retries=3, delay=5)
-async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_phone):
+async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_phone, custom_password):
     log_queue.put_nowait("[*] [STEP 4/4] Activating state verification monitors for form modal...")
     form_selector = 'form.v-form'
     await page.wait_for_selector(form_selector, timeout=15000)
@@ -161,15 +161,37 @@ async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_
     await page.locator('form.v-form input[autocomplete="new-state"]').first.fill("nairobi")
     await page.locator('form.v-form input[autocomplete="new-postcode"]').first.fill("00000")
 
-    log_queue.put_nowait("[*] Locating and clicking the view/reveal password eye toggle icon...")
-    eye_toggle_selector = 'i[aria-label="Password appended action"]'
-    await page.wait_for_selector(eye_toggle_selector, timeout=10000)
-    await page.click(eye_toggle_selector)
-    await asyncio.sleep(0.5)
+    # --- REVISED ROBUST PASSWORD OVERRIDE PIPELINE ---
+    log_queue.put_nowait("[*] Locating Vuetify password elements via autocomplete signatures...")
     
-    log_queue.put_nowait("[*] Reading autofilled text payload straight from visible password element field...")
-    recovered_password = await page.locator('form.v-form .passField input[type="text"]').first.input_value()
-    log_queue.put_nowait(f"[SUCCESS] Safely Extracted Natively Autofilled Password: {recovered_password}")
+    # 1. Target fields dynamically using stable attributes instead of fragile changing IDs
+    password_input = page.locator('form.v-form input[autocomplete="new-password"]').first
+    repeat_input = page.locator('form.v-form input[autocomplete="new-repeat-password"]').first
+
+    # 2. Force click visual password unmask eyes to expand values into text elements safely
+    log_queue.put_nowait("[*] Unmasking inputs to expose underlying string payloads...")
+    eye_toggles = page.locator('i[aria-label="Password appended action"], .v-field__append-inner i')
+    toggle_count = await eye_toggles.count()
+    for i in range(toggle_count):
+        try:
+            await eye_toggles.nth(i).click()
+            await asyncio.sleep(0.2)
+        except Exception:
+            pass
+
+    # 3. Purge the default generated passwords using hardware level keyboard selections to strip Vue state variables
+    log_queue.put_nowait(f"[*] Wiping out auto-generated payload strings and writing custom password...")
+    for field, label in [(password_input, "Primary Password"), (repeat_input, "Repeat Password")]:
+        await field.focus()
+        
+        # Cross platform absolute text selection and clear execution
+        await page.keyboard.press("Control+A")
+        await page.keyboard.press("Meta+A")
+        await page.keyboard.press("Backspace")
+        
+        # Write custom input sequentially with a realistic user typing pause threshold to trigger layout reactivity validation triggers
+        await field.type(custom_password, delay=30)
+        log_queue.put_nowait(f"[SUCCESS] Intercepted and injected custom password for: {label}")
 
     complete_btn = page.locator('form.v-form button .v-btn__content', has_text="Complete registration").first
     await complete_btn.scroll_into_view_if_needed()
@@ -178,7 +200,7 @@ async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_
     await complete_btn.click()
     log_queue.put_nowait("[SUCCESS] Complete transaction form execution completed successfully!")
     
-    return recovered_password
+    return custom_password
 
 # --- STK PUSH ACTION ---
 @retry_async_action(retries=3, delay=5)
@@ -201,7 +223,7 @@ async def trigger_mpesa_express_stk_push(log_queue, page):
     log_queue.put_nowait("[SUCCESS] M-PESA Express STK Push handshake sent successfully out to handset device!")
 
 
-async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom_phone, payment_method):
+async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom_phone, custom_password, payment_method):
     """Runs the unified automated sequence and dynamically branches based on the payment method choice."""
     global GLOBAL_BROWSER
     if not GLOBAL_BROWSER:
@@ -229,7 +251,8 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
         await step_3_click_pay_and_bypass_popup(log_queue, page)
         await asyncio.sleep(1.5)
         
-        password_captured = await step_4_inject_form_and_complete(log_queue, page, custom_email, custom_phone)
+        # Fed downstream password configuration parameters right down into runtime worker instance
+        password_confirmed = await step_4_inject_form_and_complete(log_queue, page, custom_email, custom_phone, custom_password)
         
         log_queue.put_nowait("[*] Awaiting payment processing system confirmation redirect...")
         invoice_url = ""
@@ -252,7 +275,6 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
                 break
         
         if is_invoice_found:
-            # Dynamic operational routing selection based on initial payload parameter configuration
             if payment_method == "stk":
                 log_queue.put_nowait("[*] User configuration targeted: M-PESA Express (STK Prompt Mode)")
                 await trigger_mpesa_express_stk_push(log_queue, page)
@@ -270,7 +292,7 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
             "status": "COMPLETE",
             "domain": domain_name,
             "email": custom_email,
-            "password": password_captured,
+            "password": password_confirmed,
             "invoice_url": invoice_url if invoice_url else "Timeout Redirect",
             "invoice_id": invoice_id,
             "payment_method": payment_method
@@ -285,7 +307,7 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
         log_queue.put_nowait("DONE")
 
 
-# --- FLASK DASHBOARD INTERFACE WITH DYNAMIC PAYBILL / STK LAYOUT CORES ---
+# --- FLASK DASHBOARD INTERFACE WITH PASSWORD FIELD CONTROLS ---
 
 DASHBOARD_HTML = """
 <!DOCTYPE html>
@@ -294,10 +316,9 @@ DASHBOARD_HTML = """
     <title>HostAfrica Order Provisioning Automation Engine</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; margin: 0; padding: 40px; color: #1e293b; }
-        .container { max-width: 900px; margin: 0 auto; background: #ffffff; padding: 30px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
+        .container { max-width: 950px; margin: 0 auto; background: #ffffff; padding: 30px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
         h2 { margin-top: 0; color: #0f172a; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px; }
-        .row-three { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-bottom: 20px; }
+        .grid-four { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 12px; margin-bottom: 20px; }
         label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; color: #475569; }
         input, select { width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; font-size: 14px; background: #fff; }
         button { background: #2563eb; color: white; border: none; padding: 12px 24px; font-size: 15px; font-weight: 600; border-radius: 6px; cursor: pointer; transition: background 0.2s; width: 100%; }
@@ -323,7 +344,7 @@ DASHBOARD_HTML = """
     <div class="container">
         <h2>HostAfrica Automation Workflow Dashboard</h2>
         <form id="automationForm">
-            <div class="row-three">
+            <div class="grid-four">
                 <div>
                     <label>SLD Domain Name</label>
                     <input type="text" name="domain" id="domain" placeholder="e.g. kondiyi" required>
@@ -335,6 +356,10 @@ DASHBOARD_HTML = """
                 <div>
                     <label>Phone Number</label>
                     <input type="text" name="phone" id="phone" value="+254712345678" required>
+                </div>
+                <div>
+                    <label>Custom Password Override</label>
+                    <input type="text" name="password" id="password" placeholder="Min 12 Chars + Complexity" required>
                 </div>
             </div>
             
@@ -353,7 +378,7 @@ DASHBOARD_HTML = """
             <h3 style="margin-top:0; border-bottom: 1px solid #a7f3d0; padding-bottom: 5px;">Execution Results Matrix</h3>
             <div class="res-row"><strong>Target Domain:</strong> <span id="resDomain"></span></div>
             <div class="res-row"><strong>Allocated Username:</strong> <span id="resEmail"></span></div>
-            <div class="res-row"><strong>Captured Password:</strong> <code id="resPassword"></code></div>
+            <div class="res-row"><strong>Injected Custom Password:</strong> <code id="resPassword"></code></div>
             <div class="res-row"><strong>Final Invoice Link:</strong> <span id="resInvoice"></span></div>
             
             <div class="mpesa-container">
@@ -382,6 +407,17 @@ DASHBOARD_HTML = """
     </div>
 
     <script>
+        // Optional tool: Generates random default passwords that comfortably meet modern validation criteria
+        function generateComplexPassword() {
+            const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$";
+            let pass = "";
+            for (let i = 0; i < 14; i++) {
+                pass += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return pass + "1aA!";
+        }
+        document.getElementById('password').value = generateComplexPassword();
+
         document.getElementById('automationForm').addEventListener('submit', function(e) {
             e.preventDefault();
             
@@ -398,11 +434,11 @@ DASHBOARD_HTML = """
             const domain = document.getElementById('domain').value;
             const email = document.getElementById('email').value;
             const phone = document.getElementById('phone').value;
+            const password = document.getElementById('password').value;
             const method = document.getElementById('paymentMethod').value;
 
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            // Included the context configuration payload data flags mapping variables into endpoint requests routing hooks
-            const wsUrl = `${protocol}//${window.location.host}/ws/stream?domain=${encodeURIComponent(domain)}&email=${encodeURIComponent(email)}&phone=${encodeURIComponent(phone)}&payment_method=${encodeURIComponent(method)}`;
+            const wsUrl = `${protocol}//${window.location.host}/ws/stream?domain=${encodeURIComponent(domain)}&email=${encodeURIComponent(email)}&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&payment_method=${encodeURIComponent(method)}`;
             
             const socket = new WebSocket(wsUrl);
 
@@ -431,7 +467,6 @@ DASHBOARD_HTML = """
                         document.getElementById('resInvoice').innerText = payload.invoice_url;
                     }
                     
-                    // Show or hide specific structural guidance segments dynamically depending on response flags
                     document.getElementById('blockStk').classList.remove('active-block');
                     document.getElementById('blockPaybill').classList.remove('active-block');
                     
@@ -494,17 +529,20 @@ def logs_websocket_stream_endpoint(ws):
     custom_domain = request.args.get('domain', '').strip()
     custom_email = request.args.get('email', '').strip()
     custom_phone = request.args.get('phone', '+254712345678').strip()
+    custom_password = request.args.get('password', '').strip()
     payment_method = request.args.get('payment_method', 'stk').strip()
 
     if not custom_domain:
         custom_domain = f"testdomain{random.randint(1000, 9999)}"
     if not custom_email:
         custom_email = f"dummy_{random.randint(100,999)}@gmail.com"
+    if not custom_password:
+        custom_password = "OverrodePass99!a"
 
     log_queue = asyncio.Queue()
 
     asyncio.run_coroutine_threadsafe(
-        stream_integrated_workflow(log_queue, custom_domain, custom_email, custom_phone, payment_method),
+        stream_integrated_workflow(log_queue, custom_domain, custom_email, custom_phone, custom_password, payment_method),
         LOOP
     )
 
