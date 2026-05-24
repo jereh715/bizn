@@ -96,8 +96,6 @@ async def run_homepage_pipeline(log_queue, page, domain_name):
     
     log_queue.put_nowait("[*] Waiting for redirect pipeline to land on my.hostafrica.com...")
     await page.wait_for_load_state("load")
-    # SCREAM LOCATION
-    log_queue.put_nowait(f"<span class='text-amber-300'>[LOCATION SCREAM] Currently at URL: {page.url}</span>")
     log_queue.put_nowait("[SUCCESS] Redirect completed! Sitting on checkout page.")
 
 @retry_async_action(retries=3, delay=5)
@@ -108,8 +106,6 @@ async def step_1_add_to_cart(log_queue, page, sld_prefix):
     await button_locator.wait_for(state="visible", timeout=10000)
     await button_locator.scroll_into_view_if_needed()
     await button_locator.click()
-    # SCREAM LOCATION
-    log_queue.put_nowait(f"<span class='text-amber-300'>[LOCATION SCREAM] Step 1 done. URL: {page.url}</span>")
     log_queue.put_nowait("[SUCCESS] Step 1 complete: Main row action clicked.")
 
 @retry_async_action(retries=3, delay=5)
@@ -124,9 +120,6 @@ async def step_2_remove_addon(log_queue, page):
         log_queue.put_nowait("[SUCCESS] Step 2 complete: Domain Privacy addon removed via trashcan icon.")
     else:
         log_queue.put_nowait("[*] Step 2 note: Trashcan icon not found. Already excluded.")
-    
-    # SCREAM LOCATION
-    log_queue.put_nowait(f"<span class='text-amber-300'>[LOCATION SCREAM] Step 2 done. URL: {page.url}</span>")
 
 @retry_async_action(retries=3, delay=5)
 async def step_3_click_pay_and_bypass_popup(log_queue, page):
@@ -142,8 +135,6 @@ async def step_3_click_pay_and_bypass_popup(log_queue, page):
     no_thanks_locator = page.locator('span.v-btn__content', has_text="no, thank you").first
     await no_thanks_locator.wait_for(state="visible", timeout=5000)
     await no_thanks_locator.click()
-    # SCREAM LOCATION
-    log_queue.put_nowait(f"<span class='text-amber-300'>[LOCATION SCREAM] Step 3 done. URL: {page.url}</span>")
     log_queue.put_nowait("[SUCCESS] Step 3 complete: Pop-up bypassed via 'no, thank you'. Proceeding to form...")
 
 @retry_async_action(retries=3, delay=5)
@@ -170,11 +161,14 @@ async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_
     await page.locator('form.v-form input[autocomplete="new-state"]').first.fill("nairobi")
     await page.locator('form.v-form input[autocomplete="new-postcode"]').first.fill("00000")
 
+    # --- REVISED ROBUST PASSWORD OVERRIDE PIPELINE ---
     log_queue.put_nowait("[*] Locating Vuetify password elements via autocomplete signatures...")
     
+    # 1. Target fields dynamically using stable attributes instead of fragile changing IDs
     password_input = page.locator('form.v-form input[autocomplete="new-password"]').first
     repeat_input = page.locator('form.v-form input[autocomplete="new-repeat-password"]').first
 
+    # 2. Force click visual password unmask eyes to expand values into text elements safely
     log_queue.put_nowait("[*] Unmasking inputs to expose underlying string payloads...")
     eye_toggles = page.locator('i[aria-label="Password appended action"], .v-field__append-inner i')
     toggle_count = await eye_toggles.count()
@@ -185,12 +179,17 @@ async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_
         except Exception:
             pass
 
+    # 3. Purge the default generated passwords using hardware level keyboard selections to strip Vue state variables
     log_queue.put_nowait(f"[*] Wiping out auto-generated payload strings and writing custom password...")
     for field, label in [(password_input, "Primary Password"), (repeat_input, "Repeat Password")]:
         await field.focus()
+        
+        # Cross platform absolute text selection and clear execution
         await page.keyboard.press("Control+A")
         await page.keyboard.press("Meta+A")
         await page.keyboard.press("Backspace")
+        
+        # Write custom input sequentially with a realistic user typing pause threshold to trigger layout reactivity validation triggers
         await field.type(custom_password, delay=30)
         log_queue.put_nowait(f"[SUCCESS] Intercepted and injected custom password for: {label}")
 
@@ -199,9 +198,6 @@ async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_
     
     log_queue.put_nowait("[*] Dispatching system submit action click downstream...")
     await complete_btn.click()
-    
-    # SCREAM LOCATION IMMEDIATELY AFTER CLICKING SUBMIT
-    log_queue.put_nowait(f"<span class='text-amber-300'>[LOCATION SCREAM] Submit Clicked. Current URL: {page.url}</span>")
     log_queue.put_nowait("[SUCCESS] Complete transaction form execution completed successfully!")
     
     return custom_password
@@ -209,6 +205,7 @@ async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_
 # --- STK PUSH ACTION ---
 @retry_async_action(retries=3, delay=5)
 async def trigger_mpesa_express_stk_push(log_queue, page):
+    """Targets the green 'Pay Now' invoice button to launch the overlay modal and dispatches the STK push request."""
     log_queue.put_nowait("[*] Locating Invoice Portal Pay Now anchor action selector...")
     
     invoice_pay_now = page.locator('a[data-target="#modalLoginForm"]').first
@@ -227,6 +224,7 @@ async def trigger_mpesa_express_stk_push(log_queue, page):
 
 
 async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom_phone, custom_password, payment_method):
+    """Runs the unified automated sequence and dynamically branches based on the payment method choice."""
     global GLOBAL_BROWSER
     if not GLOBAL_BROWSER:
         log_queue.put_nowait("ERROR: Global browser instance is not initialized.")
@@ -253,6 +251,7 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
         await step_3_click_pay_and_bypass_popup(log_queue, page)
         await asyncio.sleep(1.5)
         
+        # Fed downstream password configuration parameters right down into runtime worker instance
         password_confirmed = await step_4_inject_form_and_complete(log_queue, page, custom_email, custom_phone, custom_password)
         
         log_queue.put_nowait("[*] Awaiting payment processing system confirmation redirect...")
@@ -260,14 +259,9 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
         invoice_id = "UNKNOWN"
         is_invoice_found = False
         
-        # INCREASED SCANNING FREQUENCY TO CAPTURE DYNAMIC REDIRECTS MORE ACCURATELY
-        for attempt in range(1, 41):
+        for _ in range(30):
             await asyncio.sleep(1)
             current_url = page.url
-            
-            # THE CRITICAL REDIRECT MONITOR SCREAM
-            log_queue.put_nowait(f"<span class='text-sky-300'>[REDIRECT TRACKING] Loop {attempt}/40 -> Active Page Address: {current_url}</span>")
-            
             if "viewinvoice.php" in current_url:
                 invoice_url = current_url
                 log_queue.put_nowait(f"[SUCCESS] Checkout complete. Found Invoice Destination Link: {invoice_url}")
@@ -292,8 +286,6 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
             else:
                 log_queue.put_nowait("[SUCCESS] User configuration targeted: Manual Paybill Presentation. Skipping automated STK phone injection loops.")
         else:
-            # SCREAM FINAL LOCATION ON TIMEOUT FAILURE
-            log_queue.put_nowait(f"<span class='text-rose-400 font-bold'>[FATAL TIMEOUT SCREAM] Stopped hunting. Last known browser URL before exit: {page.url}</span>")
             log_queue.put_nowait("[WARN] Failed to intercept structural invoice panel context within time boundaries.")
         
         final_payload = {
@@ -301,7 +293,7 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
             "domain": domain_name,
             "email": custom_email,
             "password": password_confirmed,
-            "invoice_url": invoice_url if invoice_url else f"Timeout Redirect (Stuck at: {page.url})",
+            "invoice_url": invoice_url if invoice_url else "Timeout Redirect",
             "invoice_id": invoice_id,
             "payment_method": payment_method
         }
@@ -309,14 +301,13 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
 
     except Exception as workflow_error:
         log_queue.put_nowait(f"[CRITICAL FAILURE] Integrated pipeline collapsed: {workflow_error}")
-        log_queue.put_nowait(f"<span class='text-rose-500'>[ERROR SCREAM] Browser crashed while located at: {page.url}</span>")
     
     finally:
         await context.close()
         log_queue.put_nowait("DONE")
 
 
-# --- FLASK DASHBOARD INTERFACE ---
+# --- FLASK DASHBOARD INTERFACE WITH PASSWORD FIELD CONTROLS ---
 
 DASHBOARD_HTML = """
 <!DOCTYPE html>
@@ -332,7 +323,7 @@ DASHBOARD_HTML = """
         input, select { width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; font-size: 14px; background: #fff; }
         button { background: #2563eb; color: white; border: none; padding: 12px 24px; font-size: 15px; font-weight: 600; border-radius: 6px; cursor: pointer; transition: background 0.2s; width: 100%; }
         button:hover { background: #1d4ed8; }
-        #terminal { background: #0f172a; color: #38bdf8; font-family: "Courier New", Courier, monospace; padding: 20px; border-radius: 8px; height: 320px; overflow-y: auto; margin-top: 25px; font-size: 13px; line-height: 1.5; box-shadow: inset 0 2px 4px 0 rgb(0 0 0 / 0.5); }
+        #terminal { background: #0f172a; color: #38bdf8; font-family: "Courier New", Courier, monospace; padding: 20px; border-radius: 8px; height: 260px; overflow-y: auto; margin-top: 25px; font-size: 13px; line-height: 1.5; box-shadow: inset 0 2px 4px 0 rgb(0 0 0 / 0.5); }
         #resultCard { display: none; background: #ecfdf5; border: 1px solid #a7f3d0; padding: 20px; border-radius: 8px; margin-top: 25px; color: #065f46; }
         .res-row { margin-bottom: 8px; font-size: 15px; }
         .res-row strong { color: #047857; width: 160px; display: inline-block; }
@@ -416,6 +407,7 @@ DASHBOARD_HTML = """
     </div>
 
     <script>
+        // Optional tool: Generates random default passwords that comfortably meet modern validation criteria
         function generateComplexPassword() {
             const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$";
             let pass = "";
@@ -527,6 +519,7 @@ def keep_alive_health_check():
 
 @sock.route('/ws/stream')
 def logs_websocket_stream_endpoint(ws):
+    """Handles continuous, bi-directional live tracking via standard WebSockets."""
     ensure_background_loop_is_alive()
     global LOOP
     if not LOOP or not LOOP.is_running():
