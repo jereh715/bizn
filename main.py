@@ -39,13 +39,10 @@ async def init_global_browser():
             "--disable-gpu",
             "--no-sandbox",
             "--disable-dev-shm-usage",
-            "--window-size=1920,1080",
-            "--disable-extensions",
-            "--single-process",
-            "--js-flags=--max-old-space-size=256"  # Strict memory cap for Render containers
+            "--window-size=1920,1080"
         ]
     )
-    print("[SUCCESS] Global optimized headless browser ready for low-memory environments.")
+    print("[SUCCESS] Global headless browser is ready for remote execution pipelines.")
 
 def ensure_background_loop_is_alive():
     """Failsafe manager to boot the background thread if Gunicorn drops it inside Docker."""
@@ -61,7 +58,7 @@ def ensure_background_loop_is_alive():
                 break
             time.sleep(1)
 
-def retry_async_action(retries=3, delay=3):
+def retry_async_action(retries=3, delay=5):
     """Decorator to retry asynchronous steps if selectors or actions fail."""
     def decorator(func):
         @functools.wraps(func)
@@ -81,74 +78,74 @@ def retry_async_action(retries=3, delay=3):
         return wrapper
     return decorator
 
-@retry_async_action(retries=3, delay=4)
+@retry_async_action(retries=3, delay=5)
 async def run_homepage_pipeline(log_queue, page, domain_name):
     msg = f"[*] Navigating to Kenyan Homepage: {HOMEPAGE_URL}"
     log_queue.put_nowait(msg)
-    await page.goto(HOMEPAGE_URL, wait_until="commit", timeout=45000)
+    await page.goto(HOMEPAGE_URL, wait_until="load", timeout=60000)
     
+    # FIX: Using the streamlined element IDs to dodge form tag wrapper mismatching
     input_selector = '#findtheperfectdomain'
     submit_button_selector = '#btn-domain_check'
     
     log_queue.put_nowait(f"[*] Typing target domain into form: {domain_name}")
-    await page.wait_for_selector(input_selector, timeout=10000)
+    await page.wait_for_selector(input_selector, timeout=15000)
     await page.fill(input_selector, domain_name)
     
     log_queue.put_nowait("[*] Simulating form submission via availability check...")
     await page.click(submit_button_selector)
     
     log_queue.put_nowait("[*] Waiting for redirect pipeline to land on my.hostafrica.com...")
-    await page.wait_for_load_state("domcontentloaded")
+    await page.wait_for_load_state("load")
     log_queue.put_nowait("[SUCCESS] Redirect completed! Sitting on checkout page.")
 
-@retry_async_action(retries=3, delay=3)
+@retry_async_action(retries=3, delay=5)
 async def step_1_add_to_cart(log_queue, page, sld_prefix):
     button_selector = f'[id^="transfer-button-{sld_prefix}"]'
     log_queue.put_nowait(f"[*] [STEP 1/4] Targeting main row button for: {sld_prefix}")
     button_locator = page.locator(button_selector).first
-    await button_locator.wait_for(state="visible", timeout=8000)
+    await button_locator.wait_for(state="visible", timeout=10000)
     await button_locator.scroll_into_view_if_needed()
     await button_locator.click()
     log_queue.put_nowait("[SUCCESS] Step 1 complete: Main row action clicked.")
 
-@retry_async_action(retries=3, delay=3)
+@retry_async_action(retries=3, delay=5)
 async def step_2_remove_addon(log_queue, page):
-    log_queue.put_nowait("[*] [STEP 2/4] Checking 'Domain Warranty & Privacy' addon status...")
+    log_queue.put_nowait("[*] [STEP 2/4] Attempting to remove 'Domain Warranty & Privacy' addon...")
     trash_btn_selector = 'i.v-icon--clickable.text-error[role="button"]'
     trash_locator = page.locator(trash_btn_selector).first
     
-    # Fast evaluation without long implicit blocking
     if await trash_locator.count() > 0:
-        await trash_locator.wait_for(state="visible", timeout=3000)
+        await trash_locator.wait_for(state="visible", timeout=5000)
         await trash_locator.click()
         log_queue.put_nowait("[SUCCESS] Step 2 complete: Domain Privacy addon removed via trashcan icon.")
     else:
         log_queue.put_nowait("[*] Step 2 note: Trashcan icon not found. Already excluded.")
 
-@retry_async_action(retries=3, delay=3)
+@retry_async_action(retries=3, delay=5)
 async def step_3_click_pay_and_bypass_popup(log_queue, page):
     log_queue.put_nowait("[*] [STEP 3/4] Locating 'Pay Now' submission interface container...")
     pay_now_locator = page.locator('button .v-btn__content', has_text="Pay Now").first
-    await pay_now_locator.wait_for(state="visible", timeout=8000)
+    await pay_now_locator.wait_for(state="visible", timeout=10000)
     await pay_now_locator.scroll_into_view_if_needed()
     await pay_now_locator.click()
-    log_queue.put_nowait("[SUCCESS] 'Pay Now' clicked. Awaiting domain privacy up-sell popup window dynamically...")
+    log_queue.put_nowait("[SUCCESS] 'Pay Now' clicked. Awaiting domain privacy up-sell popup window...")
     
-    # SYSTEM FIX: Removed the massive hardcoded 5-second sleep bottleneck.
-    # Playwright now asynchronously polls the UI and interacts with it instantly when it renders.
+    await asyncio.sleep(5)
+    
     no_thanks_locator = page.locator('span.v-btn__content', has_text="no, thank you").first
-    await no_thanks_locator.wait_for(state="visible", timeout=8000)
+    await no_thanks_locator.wait_for(state="visible", timeout=5000)
     await no_thanks_locator.click()
-    log_queue.put_nowait("[SUCCESS] Step 3 complete: Pop-up bypassed cleanly via interactive targeting.")
+    log_queue.put_nowait("[SUCCESS] Step 3 complete: Pop-up bypassed via 'no, thank you'. Proceeding to form...")
 
-@retry_async_action(retries=3, delay=3)
+@retry_async_action(retries=3, delay=5)
 async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_phone, custom_password):
     log_queue.put_nowait("[*] [STEP 4/4] Activating state verification monitors for form modal...")
     form_selector = 'form.v-form'
-    await page.wait_for_selector(form_selector, timeout=12000)
+    await page.wait_for_selector(form_selector, timeout=15000)
     
     first_name_input = page.locator('form.v-form input[autocomplete="new-firstname"]').first
-    await first_name_input.wait_for(state="visible", timeout=10000)
+    await first_name_input.wait_for(state="visible", timeout=15000)
     log_queue.put_nowait("[SUCCESS] Vuetify registration inputs locked. Starting injections...")
     
     log_queue.put_nowait(f"[*] Injecting identities -> First Name: ben, Last Name: dover, Email: {custom_email}")
@@ -165,22 +162,32 @@ async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_
     await page.locator('form.v-form input[autocomplete="new-state"]').first.fill("nairobi")
     await page.locator('form.v-form input[autocomplete="new-postcode"]').first.fill("00000")
 
+    # --- IMPLEMENTED GOATED METHOD: TWO PASSES ACROSS CLASS LOCATOR ARRAY ---
     log_queue.put_nowait("[*] Intercepting registration password element arrays...")
     password_fields = page.locator('form.v-form .passField input')
-    await password_fields.nth(0).wait_for(state="visible", timeout=10000)
     
-    # Consolidated index loops for direct input rendering pipelines
+    # Structural wait condition for the password DOM cluster array
+    await password_fields.nth(0).wait_for(state="visible", timeout=15000)
+    
+    # Index 0 targets Master Password Input, Index 1 targets Confirm/Repeat Password input
     for index in range(2):
+        field_label = "Primary" if index == 0 else "Repeat/Confirmation"
+        log_queue.put_nowait(f"[*] Processing password input sequencing for -> [{field_label} Field] at index {index}")
+        
         target_input = password_fields.nth(index)
         await target_input.scroll_into_view_if_needed()
-        await target_input.click()
+        await target_input.click()  # Triggers Vuetify component reactivity
+        await target_input.fill("")
         await target_input.fill(custom_password)
+        await asyncio.sleep(0.5)    # Yield control briefly to ensure clean rendering frame state syncs
         
     log_queue.put_nowait("[SUCCESS] Both password entries executed and synced successfully.")
+    # ----------------------------------------------------------------------
     
     eye_toggle_selector = 'i[aria-label="Password appended action"]'
-    await page.wait_for_selector(eye_toggle_selector, timeout=5000)
+    await page.wait_for_selector(eye_toggle_selector, timeout=10000)
     await page.click(eye_toggle_selector)
+    await asyncio.sleep(0.5)
     
     recovered_password = await password_fields.nth(0).input_value()
     log_queue.put_nowait(f"[SUCCESS] Verified Active Form Registration Password: {recovered_password}")
@@ -194,18 +201,21 @@ async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_
     
     return recovered_password
 
-@retry_async_action(retries=3, delay=3)
+@retry_async_action(retries=3, delay=5)
 async def trigger_mpesa_express_stk_push(log_queue, page):
     log_queue.put_nowait("[*] Locating Invoice Portal Pay Now anchor action selector...")
+    
     invoice_pay_now = page.locator('a[data-target="#modalLoginForm"]').first
-    await invoice_pay_now.wait_for(state="visible", timeout=12000)
+    await invoice_pay_now.wait_for(state="visible", timeout=15000)
     await invoice_pay_now.scroll_into_view_if_needed()
+    
+    log_queue.put_nowait("[*] Clicking Invoice Pay Now button to launch MPESA overlay interface...")
     await invoice_pay_now.click()
     
     send_request_btn = page.locator('button#send-request').first
-    await send_request_btn.wait_for(state="visible", timeout=12000)
+    await send_request_btn.wait_for(state="visible", timeout=15000)
     
-    log_queue.put_nowait("[*] STK Overlay loaded. Dispatched click event onto 'Send Request' trigger...")
+    log_queue.put_nowait("[*] STK Overlay loaded. Dispatched click event onto 'Send Request to Phone' trigger action...")
     await send_request_btn.click()
     log_queue.put_nowait("[SUCCESS] M-PESA Express STK Push handshake sent successfully out to handset device!")
 
@@ -217,14 +227,11 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
         log_queue.put_nowait("DONE")
         return
 
-    log_queue.put_nowait("[*] Spawning clean resource-optimized browser context...")
+    log_queue.put_nowait("[*] Spawning clean localized browser context...")
     context = await GLOBAL_BROWSER.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/124.0.0.0 Safari/537.36",
         viewport={'width': 1920, 'height': 1080}
     )
-    
-    # NETWORK OPTIMIZATION BLOCK: Block images, stylesheets fonts, and media elements to shave off bandwidth 
-    await context.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "font", "media"] else route.continue_())
     
     page = await context.new_page()
     domain_name = f"{custom_sld}.co.ke"
@@ -232,12 +239,13 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
     try:
         await run_homepage_pipeline(log_queue, page, domain_name)
         await step_1_add_to_cart(log_queue, page, custom_sld)
+        await asyncio.sleep(1.5)
         
         await step_2_remove_addon(log_queue, page)
+        await asyncio.sleep(1.5)
         
-        # Micro-sleep to ensure state machine syncs before modal overlay triggers
-        await asyncio.sleep(0.3)
         await step_3_click_pay_and_bypass_popup(log_queue, page)
+        await asyncio.sleep(1.5)
         
         password_captured = await step_4_inject_form_and_complete(log_queue, page, custom_email, custom_phone, custom_password)
         
@@ -246,9 +254,8 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
         invoice_id = "UNKNOWN"
         is_invoice_found = False
         
-        # Faster, low-latency checking cycle loop for invoice resolution
-        for _ in range(40):
-            await asyncio.sleep(0.5)
+        for _ in range(30):
+            await asyncio.sleep(1)
             current_url = page.url
             if "viewinvoice.php" in current_url:
                 invoice_url = current_url
@@ -531,8 +538,10 @@ def logs_websocket_stream_endpoint(ws):
 
 
 if __name__ == "__main__":
+    # Corrected: Ensuring the unified loops spin cleanly on app startup
     ensure_background_loop_is_alive()
     
+    # Grab port from Render's environment, or default to 5000 locally
     port = int(os.environ.get("PORT", 5000))
     print(f"[*] Launching local Flask Server Engine on port {port} ...")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
