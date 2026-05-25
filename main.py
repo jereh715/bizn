@@ -58,7 +58,7 @@ def ensure_background_loop_is_alive():
                 break
             time.sleep(1)
 
-def retry_async_action(retries=3, delay=5):
+def retry_async_action(retries=3, delay=2):
     """Decorator to retry asynchronous steps if selectors or actions fail."""
     def decorator(func):
         @functools.wraps(func)
@@ -78,27 +78,27 @@ def retry_async_action(retries=3, delay=5):
         return wrapper
     return decorator
 
-@retry_async_action(retries=3, delay=5)
+@retry_async_action(retries=3, delay=2)
 async def run_homepage_pipeline(log_queue, page, domain_name):
     msg = f"[*] Navigating to Kenyan Homepage: {HOMEPAGE_URL}"
     log_queue.put_nowait(msg)
-    await page.goto(HOMEPAGE_URL, wait_until="load", timeout=60000)
+    await page.goto(HOMEPAGE_URL, wait_until="commit", timeout=45000)
     
     input_selector = '#findtheperfectdomain'
     submit_button_selector = '#btn-domain_check'
     
     log_queue.put_nowait(f"[*] Typing target domain into form: {domain_name}")
-    await page.wait_for_selector(input_selector, timeout=15000)
+    await page.wait_for_selector(input_selector, timeout=10000)
     await page.fill(input_selector, domain_name)
     
     log_queue.put_nowait("[*] Simulating form submission via availability check...")
     await page.click(submit_button_selector)
     
     log_queue.put_nowait("[*] Waiting for redirect pipeline to land on my.hostafrica.com...")
-    await page.wait_for_load_state("load")
+    await page.wait_for_load_state("domcontentloaded")
     log_queue.put_nowait("[SUCCESS] Redirect completed! Sitting on checkout page.")
 
-@retry_async_action(retries=3, delay=5)
+@retry_async_action(retries=3, delay=2)
 async def step_1_add_to_cart(log_queue, page, sld_prefix):
     button_selector = f'[id^="transfer-button-{sld_prefix}"]'
     log_queue.put_nowait(f"[*] [STEP 1/4] Targeting main row button for: {sld_prefix}")
@@ -108,20 +108,20 @@ async def step_1_add_to_cart(log_queue, page, sld_prefix):
     await button_locator.click()
     log_queue.put_nowait("[SUCCESS] Step 1 complete: Main row action clicked.")
 
-@retry_async_action(retries=3, delay=5)
+@retry_async_action(retries=3, delay=2)
 async def step_2_remove_addon(log_queue, page):
     log_queue.put_nowait("[*] [STEP 2/4] Attempting to remove 'Domain Warranty & Privacy' addon...")
     trash_btn_selector = 'i.v-icon--clickable.text-error[role="button"]'
     trash_locator = page.locator(trash_btn_selector).first
     
     if await trash_locator.count() > 0:
-        await trash_locator.wait_for(state="visible", timeout=5000)
+        await trash_locator.wait_for(state="visible", timeout=3000)
         await trash_locator.click()
         log_queue.put_nowait("[SUCCESS] Step 2 complete: Domain Privacy addon removed via trashcan icon.")
     else:
         log_queue.put_nowait("[*] Step 2 note: Trashcan icon not found. Already excluded.")
 
-@retry_async_action(retries=3, delay=5)
+@retry_async_action(retries=3, delay=2)
 async def step_3_click_pay_and_bypass_popup(log_queue, page):
     log_queue.put_nowait("[*] [STEP 3/4] Locating 'Pay Now' submission interface container...")
     pay_now_locator = page.locator('button .v-btn__content', has_text="Pay Now").first
@@ -130,22 +130,22 @@ async def step_3_click_pay_and_bypass_popup(log_queue, page):
     await pay_now_locator.click()
     log_queue.put_nowait("[SUCCESS] 'Pay Now' clicked. Awaiting domain privacy up-sell popup window...")
     
-    await asyncio.sleep(5)
-    
     no_thanks_locator = page.locator('span.v-btn__content', has_text="no, thank you").first
     await no_thanks_locator.wait_for(state="visible", timeout=5000)
     await no_thanks_locator.click()
+    # Tiny reactive safety window for Vuetify modal removal animation
+    await asyncio.sleep(1)
     log_queue.put_nowait("[SUCCESS] Step 3 complete: Pop-up bypassed via 'no, thank you'. Proceeding to form...")
 
-@retry_async_action(retries=3, delay=5)
+@retry_async_action(retries=3, delay=2)
 async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_phone, custom_password):
     log_queue.put_nowait("[*] [STEP 4/4] Activating state verification monitors for form modal...")
     form_selector = 'form.v-form'
-    await page.wait_for_selector(form_selector, timeout=15000)
+    await page.wait_for_selector(form_selector, timeout=10000)
     
     first_name_input = page.locator('form.v-form input[autocomplete="new-firstname"]').first
-    await first_name_input.wait_for(state="visible", timeout=15000)
-    log_queue.put_nowait("[SUCCESS] Vuetify registration inputs locked. Starting injections...")
+    await first_name_input.wait_for(state="visible", timeout=10000)
+    log_queue.put_nowait("[SUCCESS] Vuetify registration inputs locked. Starting rapid sequential injections...")
     
     log_queue.put_nowait(f"[*] Injecting identities -> First Name: ben, Last Name: dover, Email: {custom_email}")
     await first_name_input.fill("ben")
@@ -163,32 +163,20 @@ async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_
 
     log_queue.put_nowait("[*] Intercepting registration password element arrays...")
     password_fields = page.locator('form.v-form .passField input')
+    await password_fields.nth(0).wait_for(state="visible", timeout=10000)
     
-    await password_fields.nth(0).wait_for(state="visible", timeout=15000)
+    # Rapid sequential fill runs instantly without fake keyboard typing lag
+    log_queue.put_nowait("[*] Processing primary password field entry...")
+    await password_fields.nth(0).fill(custom_password)
     
-    for index in range(2):
-        field_label = "Primary" if index == 0 else "Repeat/Confirmation"
-        log_queue.put_nowait(f"[*] Processing password input sequencing for -> [{field_label} Field] at index {index}")
-        
-        target_input = password_fields.nth(index)
-        await target_input.scroll_into_view_if_needed()
-        
-        await target_input.focus()
-        await target_input.click()
-        
-        await page.keyboard.press("Control+A")
-        await page.keyboard.press("Backspace")
-        await asyncio.sleep(0.2)
-        
-        await target_input.type(custom_password, delay=100)
-        await asyncio.sleep(0.5)
+    log_queue.put_nowait("[*] Processing confirmation password field entry...")
+    await password_fields.nth(1).fill(custom_password)
         
     log_queue.put_nowait("[SUCCESS] Both password entries executed and synced successfully.")
     
     eye_toggle_selector = 'i[aria-label="Password appended action"]'
-    await page.wait_for_selector(eye_toggle_selector, timeout=10000)
+    await page.wait_for_selector(eye_toggle_selector, timeout=5000)
     await page.click(eye_toggle_selector)
-    await asyncio.sleep(0.5)
     
     recovered_password = await password_fields.nth(0).input_value()
     log_queue.put_nowait(f"[SUCCESS] Verified Active Form Registration Password: {recovered_password}")
@@ -202,7 +190,7 @@ async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_
     
     return recovered_password
 
-@retry_async_action(retries=3, delay=5)
+@retry_async_action(retries=3, delay=2)
 async def trigger_mpesa_express_stk_push(log_queue, page):
     log_queue.put_nowait("[*] Locating Invoice Portal Pay Now anchor action selector...")
     
@@ -214,7 +202,7 @@ async def trigger_mpesa_express_stk_push(log_queue, page):
     await invoice_pay_now.click()
     
     send_request_btn = page.locator('button#send-request').first
-    await send_request_btn.wait_for(state="visible", timeout=15000)
+    await send_request_btn.wait_for(state="visible", timeout=10000)
     
     log_queue.put_nowait("[*] STK Overlay loaded. Dispatched click event onto 'Send Request to Phone' trigger action...")
     await send_request_btn.click()
@@ -240,13 +228,10 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
     try:
         await run_homepage_pipeline(log_queue, page, domain_name)
         await step_1_add_to_cart(log_queue, page, custom_sld)
-        await asyncio.sleep(1.5)
         
         await step_2_remove_addon(log_queue, page)
-        await asyncio.sleep(1.5)
         
         await step_3_click_pay_and_bypass_popup(log_queue, page)
-        await asyncio.sleep(1.5)
         
         password_captured = await step_4_inject_form_and_complete(log_queue, page, custom_email, custom_phone, custom_password)
         
@@ -255,21 +240,27 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
         invoice_id = "UNKNOWN"
         is_invoice_found = False
         
-        for _ in range(30):
-            await asyncio.sleep(1)
+        try:
+            # Dynamically waits for the url to change to viewinvoice without looping
+            await page.wait_for_url(re.compile(r"viewinvoice\.php"), timeout=25000)
             current_url = page.url
-            if "viewinvoice.php" in current_url:
-                invoice_url = current_url
-                log_queue.put_nowait(f"[SUCCESS] Checkout complete. Found Invoice Destination Link: {invoice_url}")
-                
-                id_match = re.search(r'id=(\d+)', current_url)
+            invoice_url = current_url
+            log_queue.put_nowait(f"[SUCCESS] Checkout complete. Found Invoice Destination Link: {invoice_url}")
+            
+            id_match = re.search(r'id=(\d+)', current_url)
+            if id_match:
+                invoice_id = id_match.group(1)
+                log_queue.put_nowait(f"[*] Parsed Invoice Core ID Reference: {invoice_id}")
+            is_invoice_found = True
+        except Exception:
+            log_queue.put_nowait("[WARN] Direct URL redirection watch expired. Running DOM selector check...")
+            if "viewinvoice.php" in page.url:
+                invoice_url = page.url
+                id_match = re.search(r'id=(\d+)', invoice_url)
                 if id_match:
                     invoice_id = id_match.group(1)
-                    log_queue.put_nowait(f"[*] Parsed Invoice Core ID Reference: {invoice_id}")
-                
                 is_invoice_found = True
-                break
-        
+
         if is_invoice_found:
             if payment_method == "stk":
                 log_queue.put_nowait("[*] User configuration targeted: M-PESA Express (STK Prompt Mode)")
