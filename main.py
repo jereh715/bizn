@@ -306,7 +306,7 @@ async def stream_integrated_workflow(log_queue, custom_sld, first_name, last_nam
         log_queue.put_nowait("DONE")
 
 
-# --- OPTIMIZED: ASYNCHRONOUS DIRECT CARTS DOMAIN CHECKER WORKFLOW ---
+# --- OPTIMIZED & FIXED: ASYNCHRONOUS DIRECT CARTS DOMAIN CHECKER WORKFLOW ---
 
 async def stream_domain_check_workflow(log_queue, custom_sld):
     global GLOBAL_BROWSER
@@ -316,11 +316,11 @@ async def stream_domain_check_workflow(log_queue, custom_sld):
         return
 
     # Strip domain extensions if mistakenly submitted by user
-    domain_clean = re.sub(r'\.(co\.ke|ke|com|net|org)$', '', custom_sld, flags=re.IGNORECASE)
+    domain_clean = re.sub(r'\.[a-zA-Z.]+$', '', custom_sld)
     full_target_domain = f"{domain_clean}.co.ke"
 
-    # Injecting directly into WHMCS deep cart link to bypass homepage workflows completely
-    direct_cart_url = f"https://my.hostafrica.com/cart.php?a=add&domain=register&sld={domain_clean}&tld=.co.ke"
+    # FIXED: Re-added &currency=3 to sync layouts perfectly with the active cart rules
+    direct_cart_url = f"https://my.hostafrica.com/cart.php?a=add&domain=register&sld={domain_clean}&tld=.co.ke&currency=3"
 
     log_queue.put_nowait(f"[*] Initializing isolation context for scan task: {full_target_domain}")
     context = await GLOBAL_BROWSER.new_context(
@@ -331,11 +331,15 @@ async def stream_domain_check_workflow(log_queue, custom_sld):
 
     try:
         log_queue.put_nowait(f"[*] Injected deep link payload navigation targeting: {direct_cart_url}")
-        await page.goto(direct_cart_url, wait_until="domcontentloaded", timeout=30000)
+        await page.goto(direct_cart_url, wait_until="load", timeout=30000)
         
         log_queue.put_nowait("[*] Awaiting layout data parsing generation...")
-        # Give the Vue rendering process time to draw matrix panels
-        await page.wait_for_timeout(5000)
+        
+        # FIXED: Explicitly wait until elements are parsed and mounted by Vue engine
+        try:
+            await page.wait_for_selector("div.v-row--no-gutters", timeout=12000)
+        except Exception:
+            log_queue.put_nowait("[WARN] Matrix elements delayed. Running direct context parse step.")
         
         html_content = await page.content()
         soup = BeautifulSoup(html_content, 'html.parser')
