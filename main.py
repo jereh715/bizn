@@ -9,12 +9,13 @@ import time
 from flask import Flask, request, jsonify
 from flask_sock import Sock
 from playwright.async_api import async_playwright
+from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 sock = Sock(app)
 
 # --- CONFIGURATION ---
-HOMEPAGE_URL = "https://www.hostafrica.co.ke/"
+HOMEPAGE_URL = "https://www.hostafrica.ke/"
 
 GLOBAL_P = None
 GLOBAL_BROWSER = None
@@ -95,7 +96,7 @@ async def run_homepage_pipeline(log_queue, page, domain_name):
     await page.click(submit_button_selector)
     
     log_queue.put_nowait("[*] Waiting for redirect pipeline to land on my.hostafrica.com...")
-    await page.wait_for_load_state("load")
+    await page.wait_for_load_state("domcontentloaded")
     log_queue.put_nowait("[SUCCESS] Redirect completed! Sitting on checkout page.")
 
 @retry_async_action(retries=3, delay=5)
@@ -303,6 +304,97 @@ async def stream_integrated_workflow(log_queue, custom_sld, first_name, last_nam
         log_queue.put_nowait("DONE")
 
 
+# --- NEW: DOMAIN CHECKER WORKFLOW PIPELINE ---
+
+async def stream_domain_check_workflow(log_queue, custom_sld):
+    global GLOBAL_BROWSER
+    if not GLOBAL_BROWSER:
+        log_queue.put_nowait("ERROR: Global browser instance is not initialized.")
+        log_queue.put_nowait("DONE")
+        return
+
+    # Strip domain extensions if mistakenly submitted by user
+    domain_clean = re.sub(r'\.(co\.ke|ke|com|net|org)$', '', custom_sld, flags=re.IGNORECASE)
+    full_target_domain = f"{domain_clean}.co.ke"
+
+    log_queue.put_nowait(f"[*] Initializing isolation context for scan task: {full_target_domain}")
+    context = await GLOBAL_BROWSER.new_context(
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/124.0.0.0 Safari/537.36",
+        viewport={'width': 1920, 'height': 1080}
+    )
+    page = await context.new_page()
+
+    try:
+        # Step 1: Hit hostafrica.ke to establish the regional session cookiing pipeline
+        await run_homepage_pipeline(log_queue, page, full_target_domain)
+        
+        # Step 2: Give the underlying ajax forms a brief 5-second hold to fully draw their elements
+        log_queue.put_nowait("[*] Awaiting layout data parsing generation...")
+        await asyncio.sleep(5)
+        
+        html_content = await page.content()
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        results_matrix = []
+        is_target_handled = False
+
+        # --- CONDITION 1: Test if registered directly with HostAfrica internally ---
+        internal_msg = soup.find("div", class_="v-messages__message")
+        if internal_msg and "already registered with us" in internal_msg.text.lower():
+            log_queue.put_nowait(f"[!] Alert: Target registered internally within HostAfrica node maps.")
+            results_matrix.append({
+                "domain": full_target_domain,
+                "status": "NOT_AVAILABLE_HOSTAFRICA",
+                "price": "N/A"
+            })
+            is_target_handled = True
+
+        # --- CONDITION 2: Parse out rows for target and cross-sell matrixes ---
+        domain_rows = soup.find_all("div", class_="v-row--no-gutters")
+        
+        for row in domain_rows:
+            domain_name_tag = row.find(class_="domainEntryPanel--domainName")
+            if not domain_name_tag:
+                continue
+                
+            found_domain = domain_name_tag.text.strip()
+            
+            price_span = row.find("span", class_="text-nowrap")
+            if price_span and price_span.find("strong"):
+                price = price_span.find("strong").text.strip()
+            else:
+                price = "Pricing Undefined/NA"
+                
+            taken_label = row.find("span", class_="domainEntryPanel--label--taken")
+            if taken_label and "taken" in taken_label.text.lower():
+                status = "TAKEN"
+            else:
+                status = "AVAILABLE"
+
+            # If we already flagged it as registered with HostAfrica, skip double-adding the target
+            if found_domain.lower() == full_target_domain.lower() and is_target_handled:
+                continue
+
+            results_matrix.append({
+                "domain": found_domain,
+                "status": status,
+                "price": price
+            })
+
+        final_payload = {
+            "status": "SUCCESS",
+            "query_domain": full_target_domain,
+            "results": results_matrix
+        }
+        log_queue.put_nowait(f"FINAL_RESULT:{json.dumps(final_payload)}")
+
+    except Exception as check_error:
+        log_queue.put_nowait(f"[CRITICAL FAILURE] Verification sequence failed: {check_error}")
+    finally:
+        await context.close()
+        log_queue.put_nowait("DONE")
+
+
 # --- HTTP ROUTES & WEBSOCKET ENDPOINTS ---
 
 @app.route('/')
@@ -314,6 +406,7 @@ def index():
 def keep_alive_health_check():
     ensure_background_loop_is_alive()
     return jsonify({"status": "HEALTHY"}), 200
+
 
 @sock.route('/ws/stream')
 def logs_websocket_stream_endpoint(ws):
@@ -366,6 +459,44 @@ def logs_websocket_stream_endpoint(ws):
             ws.send(log_line)
         except Exception:
             print("[*] Connection closed downstream by customer interface environment.")
+            break
+            
+        if log_line == "DONE":
+            break
+
+
+# --- NEW: WEBSOCKET ENDPOINT FOR DOMAIN CHECKER ---
+
+@sock.route('/ws/check')
+def logs_websocket_check_endpoint(ws):
+    ensure_background_loop_is_alive()
+    global LOOP
+    if not LOOP or not LOOP.is_running():
+        ws.send("ERROR: Background environment loop offline.")
+        return
+
+    custom_domain = request.args.get('domain', '').strip()
+    if not custom_domain:
+        ws.send("ERROR: Missing required 'domain' tracking parameter query string.")
+        ws.send("DONE")
+        return
+
+    log_queue = asyncio.Queue()
+
+    # Dispatch checking thread directly into background loop worker core
+    asyncio.run_coroutine_threadsafe(
+        stream_domain_check_workflow(log_queue, custom_domain),
+        LOOP
+    )
+
+    while True:
+        future = asyncio.run_coroutine_threadsafe(log_queue.get(), LOOP)
+        log_line = future.result()
+        
+        try:
+            ws.send(log_line)
+        except Exception:
+            print("[*] Scan tracking connection disconnected by programmatic consumer interface client.")
             break
             
         if log_line == "DONE":
