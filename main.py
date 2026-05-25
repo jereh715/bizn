@@ -138,7 +138,7 @@ async def step_3_click_pay_and_bypass_popup(log_queue, page):
     log_queue.put_nowait("[SUCCESS] Step 3 complete: Pop-up bypassed via 'no, thank you'. Proceeding to form...")
 
 @retry_async_action(retries=3, delay=5)
-async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_phone, custom_password):
+async def step_4_inject_form_and_complete(log_queue, page, first_name, last_name, custom_email, custom_phone, custom_password):
     log_queue.put_nowait("[*] [STEP 4/4] Activating state verification monitors for form modal...")
     form_selector = 'form.v-form'
     await page.wait_for_selector(form_selector, timeout=15000)
@@ -147,9 +147,9 @@ async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_
     await first_name_input.wait_for(state="visible", timeout=15000)
     log_queue.put_nowait("[SUCCESS] Vuetify registration inputs locked. Starting injections...")
     
-    log_queue.put_nowait(f"[*] Injecting identities -> First Name: ben, Last Name: dover, Email: {custom_email}")
-    await first_name_input.fill("ben")
-    await page.locator('form.v-form input[autocomplete="new-lastname"]').first.fill("dover")
+    log_queue.put_nowait(f"[*] Injecting identities -> First Name: {first_name}, Last Name: {last_name}, Email: {custom_email}")
+    await first_name_input.fill(first_name)
+    await page.locator('form.v-form input[autocomplete="new-lastname"]').first.fill(last_name)
     await page.locator('form.v-form input[autocomplete="email"]').first.fill(custom_email)
     
     log_queue.put_nowait(f"[*] Injecting telephone context: {custom_phone}")
@@ -221,7 +221,7 @@ async def trigger_mpesa_express_stk_push(log_queue, page):
     log_queue.put_nowait("[SUCCESS] M-PESA Express STK Push handshake sent successfully out to handset device!")
 
 
-async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom_phone, custom_password, payment_method):
+async def stream_integrated_workflow(log_queue, custom_sld, first_name, last_name, custom_email, custom_phone, custom_password, payment_method):
     global GLOBAL_BROWSER
     if not GLOBAL_BROWSER:
         log_queue.put_nowait("ERROR: Global browser instance is not initialized.")
@@ -248,7 +248,7 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
         await step_3_click_pay_and_bypass_popup(log_queue, page)
         await asyncio.sleep(1.5)
         
-        password_captured = await step_4_inject_form_and_complete(log_queue, page, custom_email, custom_phone, custom_password)
+        password_captured = await step_4_inject_form_and_complete(log_queue, page, first_name, last_name, custom_email, custom_phone, custom_password)
         
         log_queue.put_nowait("[*] Awaiting payment processing system confirmation redirect...")
         invoice_url = ""
@@ -324,6 +324,8 @@ def logs_websocket_stream_endpoint(ws):
         return
 
     custom_domain = request.args.get('domain', '').strip()
+    first_name = request.args.get('first_name', 'ben').strip()
+    last_name = request.args.get('last_name', 'dover').strip()
     custom_email = request.args.get('email', '').strip()
     custom_password = request.args.get('password', '').strip()
     custom_phone = request.args.get('phone', '+254712345678').strip()
@@ -336,10 +338,23 @@ def logs_websocket_stream_endpoint(ws):
     if not custom_password:
         custom_password = f"Pass_{random.randint(10000,99999)}!"
 
+    # --- BACKEND GMAIL AUTOMATIC SUB-ADDRESSING ---
+    if "@gmail.com" in custom_email.lower() and "+" not in custom_email:
+        parts = custom_email.split('@')
+        username = parts[0]
+        domain_name = parts[1]
+        
+        epoch_secs = int(time.time())
+        unique_token = epoch_secs % 1000000
+        unique_token_str = f"{unique_token:06d}"
+        
+        custom_email = f"{username}+{unique_token_str}@{domain_name}"
+    # ----------------------------------------------
+
     log_queue = asyncio.Queue()
 
     asyncio.run_coroutine_threadsafe(
-        stream_integrated_workflow(log_queue, custom_domain, custom_email, custom_phone, custom_password, payment_method),
+        stream_integrated_workflow(log_queue, custom_domain, first_name, last_name, custom_email, custom_phone, custom_password, payment_method),
         LOOP
     )
 
