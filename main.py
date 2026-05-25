@@ -79,6 +79,8 @@ def retry_async_action(retries=3, delay=5):
         return wrapper
     return decorator
 
+# --- REGISTRATION / PURCHASING PIPELINE STEPS ---
+
 @retry_async_action(retries=3, delay=5)
 async def run_homepage_pipeline(log_queue, page, domain_name):
     msg = f"[*] Navigating to Kenyan Homepage: {HOMEPAGE_URL}"
@@ -304,7 +306,7 @@ async def stream_integrated_workflow(log_queue, custom_sld, first_name, last_nam
         log_queue.put_nowait("DONE")
 
 
-# --- NEW: DOMAIN CHECKER WORKFLOW PIPELINE ---
+# --- OPTIMIZED: ASYNCHRONOUS DIRECT CARTS DOMAIN CHECKER WORKFLOW ---
 
 async def stream_domain_check_workflow(log_queue, custom_sld):
     global GLOBAL_BROWSER
@@ -317,6 +319,9 @@ async def stream_domain_check_workflow(log_queue, custom_sld):
     domain_clean = re.sub(r'\.(co\.ke|ke|com|net|org)$', '', custom_sld, flags=re.IGNORECASE)
     full_target_domain = f"{domain_clean}.co.ke"
 
+    # Injecting directly into WHMCS deep cart link to bypass homepage workflows completely
+    direct_cart_url = f"https://my.hostafrica.com/cart.php?a=add&domain=register&sld={domain_clean}&tld=.co.ke"
+
     log_queue.put_nowait(f"[*] Initializing isolation context for scan task: {full_target_domain}")
     context = await GLOBAL_BROWSER.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -325,12 +330,12 @@ async def stream_domain_check_workflow(log_queue, custom_sld):
     page = await context.new_page()
 
     try:
-        # Step 1: Hit hostafrica.ke to establish the regional session cookiing pipeline
-        await run_homepage_pipeline(log_queue, page, full_target_domain)
+        log_queue.put_nowait(f"[*] Injected deep link payload navigation targeting: {direct_cart_url}")
+        await page.goto(direct_cart_url, wait_until="domcontentloaded", timeout=30000)
         
-        # Step 2: Give the underlying ajax forms a brief 5-second hold to fully draw their elements
         log_queue.put_nowait("[*] Awaiting layout data parsing generation...")
-        await asyncio.sleep(5)
+        # Give the Vue rendering process time to draw matrix panels
+        await page.wait_for_timeout(5000)
         
         html_content = await page.content()
         soup = BeautifulSoup(html_content, 'html.parser')
@@ -349,7 +354,7 @@ async def stream_domain_check_workflow(log_queue, custom_sld):
             })
             is_target_handled = True
 
-        # --- CONDITION 2: Parse out rows for target and cross-sell matrixes ---
+        # --- CONDITION 2: Parse out rows for target and cross-sell matrices ---
         domain_rows = soup.find_all("div", class_="v-row--no-gutters")
         
         for row in domain_rows:
@@ -371,7 +376,7 @@ async def stream_domain_check_workflow(log_queue, custom_sld):
             else:
                 status = "AVAILABLE"
 
-            # If we already flagged it as registered with HostAfrica, skip double-adding the target
+            # If we already flagged it as registered with HostAfrica, skip double-adding the target row
             if found_domain.lower() == full_target_domain.lower() and is_target_handled:
                 continue
 
@@ -380,6 +385,9 @@ async def stream_domain_check_workflow(log_queue, custom_sld):
                 "status": status,
                 "price": price
             })
+
+        if not results_matrix:
+            log_queue.put_nowait("[WARN] No operational records parsed from HostAfrica structural matrix layout.")
 
         final_payload = {
             "status": "SUCCESS",
@@ -464,8 +472,6 @@ def logs_websocket_stream_endpoint(ws):
         if log_line == "DONE":
             break
 
-
-# --- NEW: WEBSOCKET ENDPOINT FOR DOMAIN CHECKER ---
 
 @sock.route('/ws/check')
 def logs_websocket_check_endpoint(ws):
