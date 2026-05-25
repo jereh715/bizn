@@ -6,7 +6,7 @@ import json
 import re
 import functools
 import time
-from flask import Flask, request, render_template_string
+from flask import Flask, request, jsonify
 from flask_sock import Sock
 from playwright.async_api import async_playwright
 
@@ -84,7 +84,6 @@ async def run_homepage_pipeline(log_queue, page, domain_name):
     log_queue.put_nowait(msg)
     await page.goto(HOMEPAGE_URL, wait_until="load", timeout=60000)
     
-    # FIX: Using the streamlined element IDs to dodge form tag wrapper mismatching
     input_selector = '#findtheperfectdomain'
     submit_button_selector = '#btn-domain_check'
     
@@ -162,14 +161,11 @@ async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_
     await page.locator('form.v-form input[autocomplete="new-state"]').first.fill("nairobi")
     await page.locator('form.v-form input[autocomplete="new-postcode"]').first.fill("00000")
 
-    # --- HARDENED PASS-BY-PASS TIMING ROUTINE FOR HEADLESS CLOUD SHIFT ---
     log_queue.put_nowait("[*] Intercepting registration password element arrays...")
     password_fields = page.locator('form.v-form .passField input')
     
-    # Structural wait condition for the password DOM cluster array
     await password_fields.nth(0).wait_for(state="visible", timeout=15000)
     
-    # Index 0 targets Master Password Input, Index 1 targets Confirm/Repeat Password input
     for index in range(2):
         field_label = "Primary" if index == 0 else "Repeat/Confirmation"
         log_queue.put_nowait(f"[*] Processing password input sequencing for -> [{field_label} Field] at index {index}")
@@ -177,21 +173,17 @@ async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_
         target_input = password_fields.nth(index)
         await target_input.scroll_into_view_if_needed()
         
-        # Focus layout frames manually
         await target_input.focus()
-        await target_input.click()  # Triggers Vuetify component reactivity
+        await target_input.click()
         
-        # Clear out virtual DOM values using simulated systemic keystrokes
         await page.keyboard.press("Control+A")
         await page.keyboard.press("Backspace")
-        await asyncio.sleep(0.2)  # Give framework states room to clear
+        await asyncio.sleep(0.2)
         
-        # Emulate human keystrokes with 100ms intervals to satisfy framework rules
         await target_input.type(custom_password, delay=100)
-        await asyncio.sleep(0.5)  # Let layout components digest values fully
+        await asyncio.sleep(0.5)
         
     log_queue.put_nowait("[SUCCESS] Both password entries executed and synced successfully.")
-    # ----------------------------------------------------------------------
     
     eye_toggle_selector = 'i[aria-label="Password appended action"]'
     await page.wait_for_selector(eye_toggle_selector, timeout=10000)
@@ -311,198 +303,17 @@ async def stream_integrated_workflow(log_queue, custom_sld, custom_email, custom
         log_queue.put_nowait("DONE")
 
 
-# --- FLASK DASHBOARD INTERFACE LAYOUT ---
-DASHBOARD_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>HostAfrica Order Provisioning Automation Engine</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; margin: 0; padding: 40px; color: #1e293b; }
-        .container { max-width: 950px; margin: 0 auto; background: #ffffff; padding: 30px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
-        h2 { margin-top: 0; color: #0f172a; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; }
-        .grid-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px; }
-        label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; color: #475569; }
-        input, select { width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; font-size: 14px; background: #fff; }
-        button { background: #2563eb; color: white; border: none; padding: 12px 24px; font-size: 15px; font-weight: 600; border-radius: 6px; cursor: pointer; transition: background 0.2s; width: 100%; }
-        button:hover { background: #1d4ed8; }
-        #terminal { background: #0f172a; color: #38bdf8; font-family: "Courier New", Courier, monospace; padding: 20px; border-radius: 8px; height: 260px; overflow-y: auto; margin-top: 25px; font-size: 13px; line-height: 1.5; box-shadow: inset 0 2px 4px 0 rgb(0 0 0 / 0.5); }
-        #resultCard { display: none; background: #ecfdf5; border: 1px solid #a7f3d0; padding: 20px; border-radius: 8px; margin-top: 25px; color: #065f46; }
-        .res-row { margin-bottom: 8px; font-size: 15px; }
-        .res-row strong { color: #047857; width: 160px; display: inline-block; }
-        code { background: #d1fae5; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 14px; font-weight: bold; color: #065f46; }
-        a { color: #2563eb; font-weight: bold; text-decoration: none; }
-        a:hover { text-decoration: underline; }
-        .mpesa-container { background: #f0fdf4; border-left: 5px solid #22c55e; padding: 15px; border-radius: 4px; margin-top: 15px; font-family: sans-serif; color: #14532d; }
-        .mpesa-title { font-weight: bold; font-size: 16px; margin-bottom: 10px; color: #166534; display: flex; align-items: center; }
-        .mpesa-step { font-size: 14px; margin-bottom: 4px; padding-left: 5px; }
-        .mpesa-highlight { background: #bbf7d0; color: #166534; padding: 1px 5px; border-radius: 3px; font-weight: bold; font-family: monospace; }
-        .method-block { display: none; margin-top: 10px; }
-        .active-block { display: block !important; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h2>HostAfrica Automation Workflow Dashboard</h2>
-        <form id="automationForm">
-            <div class="grid-layout">
-                <div>
-                    <label>SLD Domain Name</label>
-                    <input type="text" name="domain" id="domain" placeholder="e.g. kondiyi" required>
-                </div>
-                <div>
-                    <label>Email Address</label>
-                    <input type="email" name="email" id="email" placeholder="e.g. user@gmail.com" required>
-                </div>
-            </div>
-
-            <div class="grid-layout">
-                <div>
-                    <label>Account Password</label>
-                    <input type="text" name="password" id="password" placeholder="Enter your custom secure password" required>
-                </div>
-                <div>
-                    <label>Phone Number</label>
-                    <input type="text" name="phone" id="phone" value="+254712345678" required>
-                </div>
-            </div>
-            
-            <div style="margin-bottom: 25px;">
-                <label>Preferred M-PESA Processing Mode</label>
-                <select id="paymentMethod" required>
-                    <option value="stk" selected>M-PESA Express (Automatic STK Push Prompt Window)</option>
-                    <option value="paybill">Lipa Na M-PESA Paybill (Manual Directory Step Fallback)</option>
-                </select>
-            </div>
-            
-            <button type="submit" id="submitBtn">Launch Order Automation Pipeline</button>
-        </form>
-
-        <div id="resultCard">
-            <h3 style="margin-top:0; border-bottom: 1px solid #a7f3d0; padding-bottom: 5px;">Execution Results Matrix</h3>
-            <div class="res-row"><strong>Target Domain:</strong> <span id="resDomain"></span></div>
-            <div class="res-row"><strong>Allocated Username:</strong> <span id="resEmail"></span></div>
-            <div class="res-row"><strong>Captured Password:</strong> <code id="resPassword"></code></div>
-            <div class="res-row"><strong>Final Invoice Link:</strong> <span id="resInvoice"></span></div>
-            
-            <div class="mpesa-container">
-                <div class="mpesa-title">💸 M-PESA Gateway Router Operations Matrix</div>
-                
-                <div id="blockStk" class="method-block">
-                    <div style="font-weight: bold; margin-bottom: 6px; color: #166534;">Prompt Route Status:</div>
-                    <div class="mpesa-step">An M-PESA SIM Toolkit interaction interface window popup layout handshake was transmitted down to phone line <code id="confirmPhone"></code>. Please verify your PIN entry within the timeframe parameters.</div>
-                </div>
-                
-                <div id="blockPaybill" class="method-block">
-                    <div style="font-weight: bold; margin-bottom: 6px; color: #166534;">Manual Directory Step Fallback Strategy:</div>
-                    <div class="mpesa-step">1. Go to Safaricom Menu</div>
-                    <div class="mpesa-step">2. Select <b>M-PESA</b></div>
-                    <div class="mpesa-step">3. Select <b>Lipa na MPESA</b></div>
-                    <div class="mpesa-step">4. Select <b>Paybill</b></div>
-                    <div class="mpesa-step">5. Enter Business No: <span class="mpesa-highlight">890500</span></div>
-                    <div class="mpesa-step">6. Enter Account No: <span class="mpesa-highlight" id="mpesaAccount">Loading...</span></div>
-                    <div class="mpesa-step">7. Enter Amount (without commas): <span class="mpesa-highlight">462.84</span></div>
-                    <div class="mpesa-step">8. Enter your PIN and Confirm.</div>
-                </div>
-            </div>
-        </div>
-
-        <div id="terminal">System Core Idle. Awaiting launch triggers...<br></div>
-    </div>
-
-    <script>
-        document.getElementById('automationForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-            
-            const submitBtn = document.getElementById('submitBtn');
-            const term = document.getElementById('terminal');
-            const resultCard = document.getElementById('resultCard');
-            
-            submitBtn.disabled = true;
-            submitBtn.style.background = '#64748b';
-            submitBtn.innerText = 'Automation Running...';
-            resultCard.style.display = 'none';
-            term.innerHTML = "<b>[SYSTEM START] Initializing Live Connection To WebSocket Monitor Stream...</b><br>";
-
-            const domain = document.getElementById('domain').value;
-            const email = document.getElementById('email').value;
-            const password = document.getElementById('password').value;
-            const phone = document.getElementById('phone').value;
-            const method = document.getElementById('paymentMethod').value;
-
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws/stream?domain=${encodeURIComponent(domain)}&email=${encodeURIComponent(email)}&password=${encodeURIComponent(password)}&phone=${encodeURIComponent(phone)}&payment_method=${encodeURIComponent(method)}`;
-            
-            const socket = new WebSocket(wsUrl);
-
-            socket.onmessage = function(event) {
-                const data = event.data;
-
-                if (data === "DONE") {
-                    socket.close();
-                    submitBtn.disabled = false;
-                    submitBtn.style.background = '#2563eb';
-                    submitBtn.innerText = 'Launch Order Automation Pipeline';
-                    term.innerHTML += "<b>[SYSTEM END] Connection completed cleanly. WebSocket Channel Closed.</b><br>";
-                    term.scrollTop = term.scrollHeight;
-                } 
-                else if (data.startsWith("FINAL_RESULT:")) {
-                    const payload = JSON.parse(data.replace("FINAL_RESULT:", ""));
-                    document.getElementById('resDomain').innerText = payload.domain;
-                    document.getElementById('resEmail').innerText = payload.email;
-                    document.getElementById('resPassword').innerText = payload.password;
-                    document.getElementById('mpesaAccount').innerText = payload.invoice_id;
-                    document.getElementById('confirmPhone').innerText = payload.phone || phone;
-                    
-                    if (payload.invoice_url.startsWith("http")) {
-                        document.getElementById('resInvoice').innerHTML = `<a href="${payload.invoice_url}" target="_blank">${payload.invoice_url}</a>`;
-                    } else {
-                        document.getElementById('resInvoice').innerText = payload.invoice_url;
-                    }
-                    
-                    document.getElementById('blockStk').classList.remove('active-block');
-                    document.getElementById('blockPaybill').classList.remove('active-block');
-                    
-                    if(payload.payment_method === 'stk') {
-                        document.getElementById('blockStk').classList.add('active-block');
-                    } else {
-                        document.getElementById('blockPaybill').classList.add('active-block');
-                    }
-                    
-                    resultCard.style.display = 'block';
-                } 
-                else {
-                    term.innerHTML += data + "<br>";
-                    term.scrollTop = term.scrollHeight;
-                }
-            };
-
-            socket.onerror = function() {
-                term.innerHTML += "<span style='color:#ef4444;'>[ERROR] WebSocket failed or lost connection channel.</span><br>";
-                socket.close();
-                submitBtn.disabled = false;
-                submitBtn.style.background = '#2563eb';
-                submitBtn.innerText = 'Launch Order Automation Pipeline';
-            };
-            
-            document.getElementById('automationForm').reset();
-        });
-    </script>
-</body>
-</html>
-"""
-
 # --- HTTP ROUTES & WEBSOCKET ENDPOINTS ---
 
 @app.route('/')
-def load_dashboard_ui():
+def index():
     ensure_background_loop_is_alive()
-    return render_template_string(DASHBOARD_HTML)
+    return jsonify({"status": "ONLINE", "message": "HostAfrica Automation Engine Running"}), 200
 
 @app.route('/healthz')
 def keep_alive_health_check():
     ensure_background_loop_is_alive()
-    return "", 200
+    return jsonify({"status": "HEALTHY"}), 200
 
 @sock.route('/ws/stream')
 def logs_websocket_stream_endpoint(ws):
