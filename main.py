@@ -162,7 +162,7 @@ async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_
     await page.locator('form.v-form input[autocomplete="new-state"]').first.fill("nairobi")
     await page.locator('form.v-form input[autocomplete="new-postcode"]').first.fill("00000")
 
-    # --- IMPLEMENTED GOATED METHOD: TWO PASSES ACROSS CLASS LOCATOR ARRAY ---
+    # --- HARDENED PASS-BY-PASS TIMING ROUTINE FOR HEADLESS CLOUD SHIFT ---
     log_queue.put_nowait("[*] Intercepting registration password element arrays...")
     password_fields = page.locator('form.v-form .passField input')
     
@@ -176,10 +176,19 @@ async def step_4_inject_form_and_complete(log_queue, page, custom_email, custom_
         
         target_input = password_fields.nth(index)
         await target_input.scroll_into_view_if_needed()
+        
+        # Focus layout frames manually
+        await target_input.focus()
         await target_input.click()  # Triggers Vuetify component reactivity
-        await target_input.fill("")
-        await target_input.fill(custom_password)
-        await asyncio.sleep(0.5)    # Yield control briefly to ensure clean rendering frame state syncs
+        
+        # Clear out virtual DOM values using simulated systemic keystrokes
+        await page.keyboard.press("Control+A")
+        await page.keyboard.press("Backspace")
+        await asyncio.sleep(0.2)  # Give framework states room to clear
+        
+        # Emulate human keystrokes with 100ms intervals to satisfy framework rules
+        await target_input.type(custom_password, delay=100)
+        await asyncio.sleep(0.5)  # Let layout components digest values fully
         
     log_queue.put_nowait("[SUCCESS] Both password entries executed and synced successfully.")
     # ----------------------------------------------------------------------
@@ -538,10 +547,7 @@ def logs_websocket_stream_endpoint(ws):
 
 
 if __name__ == "__main__":
-    # Corrected: Ensuring the unified loops spin cleanly on app startup
     ensure_background_loop_is_alive()
-    
-    # Grab port from Render's environment, or default to 5000 locally
     port = int(os.environ.get("PORT", 5000))
     print(f"[*] Launching local Flask Server Engine on port {port} ...")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
