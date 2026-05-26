@@ -415,6 +415,58 @@ def keep_alive_health_check():
     return jsonify({"status": "HEALTHY"}), 200
 
 
+# NEW: Fire-and-Forget HTTP Handle for PHP cURL requests
+@app.route('/api/stream', methods=['POST'])
+def http_stream_trigger_endpoint():
+    ensure_background_loop_is_alive()
+    global LOOP
+    if not LOOP or not LOOP.is_running():
+        return jsonify({"status": "ERROR", "message": "Background environment loop offline."}), 500
+
+    input_data = request.get_json(silent=True) or {}
+
+    custom_domain   = input_data.get('domain', '').strip()
+    first_name      = input_data.get('first_name', 'ben').strip()
+    last_name       = input_data.get('last_name', 'dover').strip()
+    custom_email    = input_data.get('email', '').strip()
+    custom_password = input_data.get('password', '').strip()
+    custom_phone    = input_data.get('phone', '+254712345678').strip()
+    payment_method  = input_data.get('payment_method', 'paybill').strip()
+
+    if not custom_domain:
+        return jsonify({"status": "ERROR", "message": "Missing target domain processing variable."}), 400
+
+    if not custom_email:
+        custom_email = f"dummy_{random.randint(100,999)}@gmail.com"
+    if not custom_password:
+        custom_password = f"Pass_{random.randint(10000,99999)}!"
+
+    if "@gmail.com" in custom_email.lower() and "+" not in custom_email:
+        parts = custom_email.split('@')
+        username = parts[0]
+        domain_name = parts[1]
+        epoch_secs = int(time.time())
+        custom_email = f"{username}+{epoch_secs % 1000000:06d}@{domain_name}"
+
+    # Target workflow expects a log queue. A standalone background queue satisfies this seamlessly.
+    dummy_log_queue = asyncio.Queue()
+
+    # Hand off the task immediately into the running event loop on the separate thread
+    asyncio.run_coroutine_threadsafe(
+        stream_integrated_workflow(
+            dummy_log_queue, custom_domain, first_name, last_name, 
+            custom_email, custom_phone, custom_password, payment_method
+        ),
+        LOOP
+    )
+
+    return jsonify({
+        "status": "ACCEPTED",
+        "message": "Automation pipeline successfully queued via fire-and-forget HTTP route.",
+        "target_domain": f"{custom_domain}.co.ke"
+    }), 202
+
+
 @sock.route('/ws/stream')
 def logs_websocket_stream_endpoint(ws):
     ensure_background_loop_is_alive()
