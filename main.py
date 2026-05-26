@@ -6,6 +6,8 @@ import json
 import re
 import functools
 import time
+import ftplib
+import io
 from flask import Flask, request, jsonify
 from flask_sock import Sock
 from playwright.async_api import async_playwright
@@ -17,9 +19,74 @@ sock = Sock(app)
 # --- CONFIGURATION ---
 HOMEPAGE_URL = "https://www.hostafrica.ke/"
 
+# FTP STORAGE CONFIGURATION
+FTP_HOST = "ftpupload.net"
+FTP_USER = "bizna_41810217"
+FTP_PASS = "viuowgbs"
+
 GLOBAL_P = None
 GLOBAL_BROWSER = None
 LOOP = None
+
+
+# --- HEADLESS FTP BACKEND ADAPTER ---
+
+def append_domain_record_to_ftp(payload):
+    """
+    Synchronizes transaction payload data with the remote FTP server.
+    Loads, extends, and writes back records inside htdocs/data/domains.json.
+    """
+    print(f"[*] Initiating remote FTP state synchronization for: {payload.get('domain')}")
+    try:
+        ftp = ftplib.FTP(FTP_HOST)
+        ftp.login(FTP_USER, FTP_PASS)
+        ftp.set_pasv(True)
+        
+        # 1. Access root web asset directory
+        try:
+            ftp.cwd('htdocs')
+        except Exception:
+            pass
+        
+        # 2. Check and safely generate the data container subfolder if absent
+        try:
+            ftp.cwd('data')
+        except Exception:
+            print("[FTP Storage] Subfolder 'data' missing. Creating directory...")
+            ftp.mkd('data')
+            ftp.cwd('data')
+            
+        # 3. Retrieve historical registrations array
+        current_records = []
+        try:
+            memory_buffer = io.BytesIO()
+            ftp.retrbinary("RETR domains.json", memory_buffer.write)
+            raw_content = memory_buffer.getvalue().decode('utf-8').strip()
+            if raw_content:
+                current_records = json.loads(raw_content)
+                if not isinstance(current_records, list):
+                    current_records = [current_records]
+        except Exception:
+            print("[FTP Storage] domains.json not found or empty. Initializing structural base array.")
+            current_records = []
+
+        # 4. Mix new execution payload tracking blocks into structural data array
+        current_records.append(payload)
+        
+        # 5. Overwrite the remote JSON persistence file with updated records
+        updated_json_bytes = json.dumps(current_records, indent=4).encode('utf-8')
+        upload_buffer = io.BytesIO(updated_json_bytes)
+        
+        ftp.storbinary("STOR domains.json", upload_buffer)
+        print("[SUCCESS] Data synchronized cleanly with htdocs/data/domains.json")
+        ftp.quit()
+        return True
+    except Exception as ftp_err:
+        print(f"[FTP PIPELINE FAILURE] Storage routing collapsed: {ftp_err}")
+        return False
+
+
+# --- RUNTIME LOOPS MANAGEMENT ---
 
 def start_global_loop():
     global LOOP
@@ -78,6 +145,7 @@ def retry_async_action(retries=3, delay=5):
             raise last_exception
         return wrapper
     return decorator
+
 
 # --- REGISTRATION / PURCHASING PIPELINE STEPS ---
 
@@ -294,9 +362,23 @@ async def stream_integrated_workflow(log_queue, custom_sld, first_name, last_nam
             "password": password_captured,
             "invoice_url": invoice_url if invoice_url else "Timeout Redirect",
             "invoice_id": invoice_id,
-            "payment_method": payment_method
+            "payment_method": payment_method,
+            "timestamp": int(time.time())
         }
         log_queue.put_nowait(f"FINAL_RESULT:{json.dumps(final_payload)}")
+
+        # === HEADLESS REMOTE FTP PIPELINE INJECTION ===
+        log_queue.put_nowait("[*] Storage Pipeline: Synchronizing transaction data to remote FTP nodes...")
+        
+        # Execute synchronization function safely inside standard background loop
+        loop = asyncio.get_event_loop()
+        sync_success = await loop.run_in_executor(None, append_domain_record_to_ftp, final_payload)
+        
+        if sync_success:
+            log_queue.put_nowait("[SUCCESS] Registration state safely preserved on external hosting structure.")
+        else:
+            log_queue.put_nowait("[WARN] Local execution finished, but remote FTP tracking write failed.")
+        # ===============================================
 
     except Exception as workflow_error:
         log_queue.put_nowait(f"[CRITICAL FAILURE] Integrated pipeline collapsed: {workflow_error}")
@@ -306,7 +388,7 @@ async def stream_integrated_workflow(log_queue, custom_sld, first_name, last_nam
         log_queue.put_nowait("DONE")
 
 
-# --- OPTIMIZED & FIXED: ASYNCHRONOUS DIRECT CARTS DOMAIN CHECKER WORKFLOW ---
+# --- ASYNCHRONOUS DIRECT CARTS DOMAIN CHECKER WORKFLOW ---
 
 async def stream_domain_check_workflow(log_queue, custom_sld):
     global GLOBAL_BROWSER
@@ -315,11 +397,8 @@ async def stream_domain_check_workflow(log_queue, custom_sld):
         log_queue.put_nowait("DONE")
         return
 
-    # Strip domain extensions if mistakenly submitted by user
     domain_clean = re.sub(r'\.[a-zA-Z.]+$', '', custom_sld)
     full_target_domain = f"{domain_clean}.co.ke"
-
-    # FIXED: Re-added &currency=3 to sync layouts perfectly with the active cart rules
     direct_cart_url = f"https://my.hostafrica.com/cart.php?a=add&domain=register&sld={domain_clean}&tld=.co.ke&currency=3"
 
     log_queue.put_nowait(f"[*] Initializing isolation context for scan task: {full_target_domain}")
@@ -332,10 +411,8 @@ async def stream_domain_check_workflow(log_queue, custom_sld):
     try:
         log_queue.put_nowait(f"[*] Injected deep link payload navigation targeting: {direct_cart_url}")
         await page.goto(direct_cart_url, wait_until="load", timeout=30000)
-        
         log_queue.put_nowait("[*] Awaiting layout data parsing generation...")
         
-        # FIXED: Explicitly wait until elements are parsed and mounted by Vue engine
         try:
             await page.wait_for_selector("div.v-row--no-gutters", timeout=12000)
         except Exception:
@@ -347,7 +424,6 @@ async def stream_domain_check_workflow(log_queue, custom_sld):
         results_matrix = []
         is_target_handled = False
 
-        # --- CONDITION 1: Test if registered directly with HostAfrica internally ---
         internal_msg = soup.find("div", class_="v-messages__message")
         if internal_msg and "already registered with us" in internal_msg.text.lower():
             log_queue.put_nowait(f"[!] Alert: Target registered internally within HostAfrica node maps.")
@@ -358,16 +434,13 @@ async def stream_domain_check_workflow(log_queue, custom_sld):
             })
             is_target_handled = True
 
-        # --- CONDITION 2: Parse out rows for target and cross-sell matrices ---
         domain_rows = soup.find_all("div", class_="v-row--no-gutters")
-        
         for row in domain_rows:
             domain_name_tag = row.find(class_="domainEntryPanel--domainName")
             if not domain_name_tag:
                 continue
                 
             found_domain = domain_name_tag.text.strip()
-            
             price_span = row.find("span", class_="text-nowrap")
             if price_span and price_span.find("strong"):
                 price = price_span.find("strong").text.strip()
@@ -380,7 +453,6 @@ async def stream_domain_check_workflow(log_queue, custom_sld):
             else:
                 status = "AVAILABLE"
 
-            # If we already flagged it as registered with HostAfrica, skip double-adding the target row
             if found_domain.lower() == full_target_domain.lower() and is_target_handled:
                 continue
 
@@ -443,7 +515,6 @@ def logs_websocket_stream_endpoint(ws):
     if not custom_password:
         custom_password = f"Pass_{random.randint(10000,99999)}!"
 
-    # --- BACKEND GMAIL AUTOMATIC SUB-ADDRESSING ---
     if "@gmail.com" in custom_email.lower() and "+" not in custom_email:
         parts = custom_email.split('@')
         username = parts[0]
@@ -454,7 +525,6 @@ def logs_websocket_stream_endpoint(ws):
         unique_token_str = f"{unique_token:06d}"
         
         custom_email = f"{username}+{unique_token_str}@{domain_name}"
-    # ----------------------------------------------
 
     log_queue = asyncio.Queue()
 
@@ -493,7 +563,6 @@ def logs_websocket_check_endpoint(ws):
 
     log_queue = asyncio.Queue()
 
-    # Dispatch checking thread directly into background loop worker core
     asyncio.run_coroutine_threadsafe(
         stream_domain_check_workflow(log_queue, custom_domain),
         LOOP
