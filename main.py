@@ -11,7 +11,7 @@ from flask_sock import Sock
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 
-# Import the transport sync helper from ftp.py
+# Import  the transport sync helper from ftp.py
 from ftp import append_domain_record
 
 app = Flask(__name__)
