@@ -6,6 +6,8 @@ import json
 import re
 import functools
 import time
+import ftplib
+import io
 from flask import Flask, request, jsonify
 from flask_sock import Sock
 from playwright.async_api import async_playwright
@@ -16,11 +18,72 @@ sock = Sock(app)
 
 # --- CONFIGURATION ---
 HOMEPAGE_URL = "https://www.hostafrica.ke/"
-API_ENDPOINT_URL = "https://bizna.store/pay/index.php?auth=Mambus_Secure_Vault_2026_Tokens"
+
+# FTP STORAGE CONFIGURATION
+FTP_HOST = "ftpupload.net"
+FTP_USER = "bizna_41810217"
+FTP_PASS = "viuowgbs"
 
 GLOBAL_P = None
 GLOBAL_BROWSER = None
 LOOP = None
+
+
+# --- HEADLESS FTP BACKEND ADAPTER ---
+
+def append_domain_record_to_ftp(payload):
+    """
+    Synchronizes transaction payload data with the remote FTP server.
+    Loads, extends, and writes back records inside htdocs/data/domains.json.
+    """
+    print(f"[*] Initiating remote FTP state synchronization for: {payload.get('domain')}")
+    try:
+        ftp = ftplib.FTP(FTP_HOST)
+        ftp.login(FTP_USER, FTP_PASS)
+        ftp.set_pasv(True)
+        
+        # 1. Access root web asset directory
+        try:
+            ftp.cwd('htdocs')
+        except Exception:
+            pass
+        
+        # 2. Check and safely generate the data container subfolder if absent
+        try:
+            ftp.cwd('data')
+        except Exception:
+            print("[FTP Storage] Subfolder 'data' missing. Creating directory...")
+            ftp.mkd('data')
+            ftp.cwd('data')
+            
+        # 3. Retrieve historical registrations array
+        current_records = []
+        try:
+            memory_buffer = io.BytesIO()
+            ftp.retrbinary("RETR domains.json", memory_buffer.write)
+            raw_content = memory_buffer.getvalue().decode('utf-8').strip()
+            if raw_content:
+                current_records = json.loads(raw_content)
+                if not isinstance(current_records, list):
+                    current_records = [current_records]
+        except Exception:
+            print("[FTP Storage] domains.json not found or empty. Initializing structural base array.")
+            current_records = []
+
+        # 4. Mix new execution payload tracking blocks into structural data array
+        current_records.append(payload)
+        
+        # 5. Overwrite the remote JSON persistence file with updated records
+        updated_json_bytes = json.dumps(current_records, indent=4).encode('utf-8')
+        upload_buffer = io.BytesIO(updated_json_bytes)
+        
+        ftp.storbinary("STOR domains.json", upload_buffer)
+        print("[SUCCESS] Data synchronized cleanly with htdocs/data/domains.json")
+        ftp.quit()
+        return True
+    except Exception as ftp_err:
+        print(f"[FTP PIPELINE FAILURE] Storage routing collapsed: {ftp_err}")
+        return False
 
 
 # --- RUNTIME LOOPS MANAGEMENT ---
@@ -89,16 +152,13 @@ def retry_async_action(retries=3, delay=5):
 @retry_async_action(retries=3, delay=5)
 async def run_homepage_pipeline(log_queue, page, domain_name):
     msg = f"[*] Navigating to Kenyan Homepage: {HOMEPAGE_URL}"
-    print(msg)
     log_queue.put_nowait(msg)
     await page.goto(HOMEPAGE_URL, wait_until="load", timeout=60000)
     
     input_selector = '#findtheperfectdomain'
     submit_button_selector = '#btn-domain_check'
     
-    msg = f"[*] Typing target domain into form: {domain_name}"
-    print(msg)
-    log_queue.put_nowait(msg)
+    log_queue.put_nowait(f"[*] Typing target domain into form: {domain_name}")
     await page.wait_for_selector(input_selector, timeout=15000)
     await page.fill(input_selector, domain_name)
     
@@ -111,27 +171,13 @@ async def run_homepage_pipeline(log_queue, page, domain_name):
 
 @retry_async_action(retries=3, delay=5)
 async def step_1_add_to_cart(log_queue, page, sld_prefix):
-    log_queue.put_nowait(f"[*] [STEP 1/4] Scanning structural cart layout targets for: {sld_prefix}")
-    
-    # Dynamic element definitions to handle registrations vs transfer states cleanly
-    register_btn = page.locator(f'[id^="register-button-{sld_prefix}"]').first
-    transfer_btn = page.locator(f'[id^="transfer-button-{sld_prefix}"]').first
-    generic_btn = page.locator('button[id*="-button-"]').first
-    
-    if await register_btn.count() > 0:
-        button_locator = register_btn
-        log_queue.put_nowait("[*] Match Type Confirmed: Target is AVAILABLE for new registration.")
-    elif await transfer_btn.count() > 0:
-        button_locator = transfer_btn
-        log_queue.put_nowait("[*] Match Type Confirmed: Target flagged as DOMAIN TRANSFER.")
-    else:
-        button_locator = generic_btn
-        log_queue.put_nowait("[WARN] Specific cart buttons matching prefix missing. Attempting structural fallback context wrapper...")
-
+    button_selector = f'[id^="transfer-button-{sld_prefix}"]'
+    log_queue.put_nowait(f"[*] [STEP 1/4] Targeting main row button for: {sld_prefix}")
+    button_locator = page.locator(button_selector).first
     await button_locator.wait_for(state="visible", timeout=10000)
     await button_locator.scroll_into_view_if_needed()
     await button_locator.click()
-    log_queue.put_nowait("[SUCCESS] Step 1 complete: Element clicked and bounded to current cart instance.")
+    log_queue.put_nowait("[SUCCESS] Step 1 complete: Main row action clicked.")
 
 @retry_async_action(retries=3, delay=5)
 async def step_2_remove_addon(log_queue, page):
@@ -246,16 +292,14 @@ async def trigger_mpesa_express_stk_push(log_queue, page):
     log_queue.put_nowait("[SUCCESS] M-PESA Express STK Push handshake sent successfully out to handset device!")
 
 
-async def stream_integrated_workflow(log_queue, username, custom_sld, first_name, last_name, custom_email, custom_phone, custom_password, payment_method):
+async def stream_integrated_workflow(log_queue, custom_sld, first_name, last_name, custom_email, custom_phone, custom_password, payment_method):
     global GLOBAL_BROWSER
     if not GLOBAL_BROWSER:
         log_queue.put_nowait("ERROR: Global browser instance is not initialized.")
         log_queue.put_nowait("DONE")
         return
 
-    print(f"[WORKER START] Spawning isolated workflow context. Operator Username: {username} | Domain Prefix: {custom_sld}")
     log_queue.put_nowait("[*] Spawning clean localized browser context...")
-    
     context = await GLOBAL_BROWSER.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/124.0.0.0 Safari/537.36",
         viewport={'width': 1920, 'height': 1080}
@@ -311,10 +355,8 @@ async def stream_integrated_workflow(log_queue, username, custom_sld, first_name
         else:
             log_queue.put_nowait("[WARN] Failed to intercept structural invoice panel context within time boundaries.")
         
-        # Build transaction payload metadata
         final_payload = {
             "status": "COMPLETE",
-            "username": username,
             "domain": domain_name,
             "email": custom_email,
             "password": password_captured,
@@ -323,44 +365,22 @@ async def stream_integrated_workflow(log_queue, username, custom_sld, first_name
             "payment_method": payment_method,
             "timestamp": int(time.time())
         }
-        
-        print(f"[DISPATCHING] Pipeline finished for user '{username}'. Transmitting storage payload to bizna.store...")
         log_queue.put_nowait(f"FINAL_RESULT:{json.dumps(final_payload)}")
 
-        # --- NATIVE IN-BROWSER FETCH DISPATCH FIXED FOR ANTI-BOT CHALLENGES ---
-        log_queue.put_nowait("[*] Dispatching secure browser context storage synchronization...")
-        try:
-            # Safely serialize payload into JavaScript object format
-            api_js_payload = json.dumps(final_payload)
-            
-            # Execute the network call straight through Chromium to ride on valid __test cookies
-            sync_response = await page.evaluate(f"""
-                async () => {{
-                    try {{
-                        const response = await fetch('{API_ENDPOINT_URL}', {{
-                            method: 'POST',
-                            headers: {{
-                                'Content-Type': 'application/json'
-                            }},
-                            body: JSON.stringify({api_js_payload})
-                        }});
-                        return await response.json();
-                    }} catch (err) {{
-                        return {{ "status": "ERROR", "message": err.toString() }};
-                    }}
-                }}
-            """)
-            
-            sync_success = sync_response.get("status") == "SUCCESS"
-            print(f"[DISPATCH RESULT] Browser storage synchronization response: {sync_response}")
-            log_queue.put_nowait(f"[*] Storage transmission success marker status: {sync_success}")
-            
-        except Exception as browser_api_err:
-            print(f"[CRITICAL SYNC FAILURE] Browser fetch injection collapsed: {browser_api_err}")
-            log_queue.put_nowait(f"[WARN] Storage synchronization failed: {browser_api_err}")
+        # === HEADLESS REMOTE FTP PIPELINE INJECTION ===
+        log_queue.put_nowait("[*] Storage Pipeline: Synchronizing transaction data to remote FTP nodes...")
+        
+        # Execute synchronization function safely inside standard background loop
+        loop = asyncio.get_event_loop()
+        sync_success = await loop.run_in_executor(None, append_domain_record_to_ftp, final_payload)
+        
+        if sync_success:
+            log_queue.put_nowait("[SUCCESS] Registration state safely preserved on external hosting structure.")
+        else:
+            log_queue.put_nowait("[WARN] Local execution finished, but remote FTP tracking write failed.")
+        # ===============================================
 
     except Exception as workflow_error:
-        print(f"[CRITICAL FAILURE] Pipeline collapsed for user '{username}'. Error: {workflow_error}")
         log_queue.put_nowait(f"[CRITICAL FAILURE] Integrated pipeline collapsed: {workflow_error}")
     
     finally:
@@ -472,65 +492,6 @@ def keep_alive_health_check():
     return jsonify({"status": "HEALTHY"}), 200
 
 
-# HTTP Handle for PHP cURL requests (Fire-and-Forget)
-@app.route('/api/stream', methods=['POST'])
-def http_stream_trigger_endpoint():
-    ensure_background_loop_is_alive()
-    global LOOP
-    if not LOOP or not LOOP.is_running():
-        return jsonify({"status": "ERROR", "message": "Background environment loop offline."}), 500
-
-    input_data = request.get_json(silent=True) or {}
-
-    custom_username = input_data.get('username', 'anonymous').strip()
-    custom_domain   = input_data.get('domain', '').strip()
-    first_name      = input_data.get('first_name', 'ben').strip()
-    last_name       = input_data.get('last_name', 'dover').strip()
-    custom_email    = input_data.get('email', '').strip()
-    custom_password = input_data.get('password', '').strip()
-    custom_phone    = input_data.get('phone', '+254712345678').strip()
-    payment_method  = input_data.get('payment_method', 'paybill').strip()
-
-    print(f"\n[RENDER HTTP CALL] Incoming POST request received on /api/stream")
-    print(f" -> Operator Username : {custom_username}")
-    print(f" -> Target Domain Prefix: {custom_domain}")
-    print(f" -> Email Configuration : {custom_email if custom_email else '[Auto-Generate]'}")
-    print(f" -> Payment Mode Strategy: {payment_method}\n")
-
-    if not custom_domain:
-        print("[RENDER HTTP ERROR] Request rejected due to missing domain prefix.")
-        return jsonify({"status": "ERROR", "message": "Missing target domain processing variable."}), 400
-
-    if not custom_email:
-        custom_email = f"dummy_{random.randint(100,999)}@gmail.com"
-    if not custom_password:
-        custom_password = f"Pass_{random.randint(10000,99999)}!"
-
-    if "@gmail.com" in custom_email.lower() and "+" not in custom_email:
-        parts = custom_email.split('@')
-        username_part = parts[0]
-        domain_name = parts[1]
-        epoch_secs = int(time.time())
-        custom_email = f"{username_part}+{epoch_secs % 1000000:06d}@{domain_name}"
-
-    dummy_log_queue = asyncio.Queue()
-
-    asyncio.run_coroutine_threadsafe(
-        stream_integrated_workflow(
-            dummy_log_queue, custom_username, custom_domain, first_name, last_name, 
-            custom_email, custom_phone, custom_password, payment_method
-        ),
-        LOOP
-    )
-
-    return jsonify({
-        "status": "ACCEPTED",
-        "message": "Automation pipeline successfully queued via fire-and-forget HTTP route.",
-        "username": custom_username,
-        "target_domain": f"{custom_domain}.co.ke"
-    }), 202
-
-
 @sock.route('/ws/stream')
 def logs_websocket_stream_endpoint(ws):
     ensure_background_loop_is_alive()
@@ -539,7 +500,6 @@ def logs_websocket_stream_endpoint(ws):
         ws.send("ERROR: Background environment loop offline.")
         return
 
-    custom_username = request.args.get('username', 'anonymous').strip()
     custom_domain = request.args.get('domain', '').strip()
     first_name = request.args.get('first_name', 'ben').strip()
     last_name = request.args.get('last_name', 'dover').strip()
@@ -547,9 +507,6 @@ def logs_websocket_stream_endpoint(ws):
     custom_password = request.args.get('password', '').strip()
     custom_phone = request.args.get('phone', '+254712345678').strip()
     payment_method = request.args.get('payment_method', 'stk').strip()
-
-    print(f"\n[RENDER WEBSOCKET CALL] Incoming WebSocket connection connected on /ws/stream")
-    print(f" -> Username Context: {custom_username} | Target: {custom_domain}\n")
 
     if not custom_domain:
         custom_domain = f"testdomain{random.randint(1000, 9999)}"
@@ -560,19 +517,19 @@ def logs_websocket_stream_endpoint(ws):
 
     if "@gmail.com" in custom_email.lower() and "+" not in custom_email:
         parts = custom_email.split('@')
-        username_part = parts[0]
+        username = parts[0]
         domain_name = parts[1]
         
         epoch_secs = int(time.time())
         unique_token = epoch_secs % 1000000
         unique_token_str = f"{unique_token:06d}"
         
-        custom_email = f"{username_part}+{unique_token_str}@{domain_name}"
+        custom_email = f"{username}+{unique_token_str}@{domain_name}"
 
     log_queue = asyncio.Queue()
 
     asyncio.run_coroutine_threadsafe(
-        stream_integrated_workflow(log_queue, custom_username, custom_domain, first_name, last_name, custom_email, custom_phone, custom_password, payment_method),
+        stream_integrated_workflow(log_queue, custom_domain, first_name, last_name, custom_email, custom_phone, custom_password, payment_method),
         LOOP
     )
 
@@ -583,7 +540,7 @@ def logs_websocket_stream_endpoint(ws):
         try:
             ws.send(log_line)
         except Exception:
-            print(f"[*] Connection closed downstream for task assigned to: {custom_username}")
+            print("[*] Connection closed downstream by customer interface environment.")
             break
             
         if log_line == "DONE":
