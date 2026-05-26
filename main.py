@@ -6,8 +6,6 @@ import json
 import re
 import functools
 import time
-import ftplib
-import io
 from flask import Flask, request, jsonify
 from flask_sock import Sock
 from playwright.async_api import async_playwright
@@ -19,71 +17,9 @@ sock = Sock(app)
 # --- CONFIGURATION ---
 HOMEPAGE_URL = "https://www.hostafrica.ke/"
 
-# FTP STORAGE CONFIGURATION
-FTP_HOST = "ftpupload.net"
-FTP_USER = "bizna_41810217"
-FTP_PASS = "viuowgbs"
-
 GLOBAL_P = None
 GLOBAL_BROWSER = None
 LOOP = None
-
-
-# --- HEADLESS FTP BACKEND ADAPTER ---
-
-def append_domain_record_to_ftp(payload):
-    """
-    Synchronizes transaction payload data with the remote FTP server.
-    Loads, extends, and writes back records inside htdocs/data/domains.json.
-    """
-    print(f"[*] Initiating remote FTP state synchronization for: {payload.get('domain')}")
-    try:
-        ftp = ftplib.FTP(FTP_HOST)
-        ftp.login(FTP_USER, FTP_PASS)
-        ftp.set_pasv(True)
-        
-        # 1. Access root web asset directory
-        try:
-            ftp.cwd('htdocs')
-        except Exception:
-            pass
-        
-        # 2. Check and safely generate the data container subfolder if absent
-        try:
-            ftp.cwd('data')
-        except Exception:
-            print("[FTP Storage] Subfolder 'data' missing. Creating directory...")
-            ftp.mkd('data')
-            ftp.cwd('data')
-            
-        # 3. Retrieve historical registrations array
-        current_records = []
-        try:
-            memory_buffer = io.BytesIO()
-            ftp.retrbinary("RETR domains.json", memory_buffer.write)
-            raw_content = memory_buffer.getvalue().decode('utf-8').strip()
-            if raw_content:
-                current_records = json.loads(raw_content)
-                if not isinstance(current_records, list):
-                    current_records = [current_records]
-        except Exception:
-            print("[FTP Storage] domains.json not found or empty. Initializing structural base array.")
-            current_records = []
-
-        # 4. Mix new execution payload tracking blocks into structural data array
-        current_records.append(payload)
-        
-        # 5. Overwrite the remote JSON persistence file with updated records
-        updated_json_bytes = json.dumps(current_records, indent=4).encode('utf-8')
-        upload_buffer = io.BytesIO(updated_json_bytes)
-        
-        ftp.storbinary("STOR domains.json", upload_buffer)
-        print("[SUCCESS] Data synchronized cleanly with htdocs/data/domains.json")
-        ftp.quit()
-        return True
-    except Exception as ftp_err:
-        print(f"[FTP PIPELINE FAILURE] Storage routing collapsed: {ftp_err}")
-        return False
 
 
 # --- RUNTIME LOOPS MANAGEMENT ---
@@ -366,19 +302,6 @@ async def stream_integrated_workflow(log_queue, custom_sld, first_name, last_nam
             "timestamp": int(time.time())
         }
         log_queue.put_nowait(f"FINAL_RESULT:{json.dumps(final_payload)}")
-
-        # === HEADLESS REMOTE FTP PIPELINE INJECTION ===
-        log_queue.put_nowait("[*] Storage Pipeline: Synchronizing transaction data to remote FTP nodes...")
-        
-        # Execute synchronization function safely inside standard background loop
-        loop = asyncio.get_event_loop()
-        sync_success = await loop.run_in_executor(None, append_domain_record_to_ftp, final_payload)
-        
-        if sync_success:
-            log_queue.put_nowait("[SUCCESS] Registration state safely preserved on external hosting structure.")
-        else:
-            log_queue.put_nowait("[WARN] Local execution finished, but remote FTP tracking write failed.")
-        # ===============================================
 
     except Exception as workflow_error:
         log_queue.put_nowait(f"[CRITICAL FAILURE] Integrated pipeline collapsed: {workflow_error}")
