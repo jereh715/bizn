@@ -5,3 +5,4 @@ flask-sock==0.7.0
 beautifulsoup4==4.12.3
 gunicorn==22.0.0
 gevent==24.2.1
+supabase>=2.0.0
