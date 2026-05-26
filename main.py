@@ -113,13 +113,27 @@ async def run_homepage_pipeline(log_queue, page, domain_name):
 
 @retry_async_action(retries=3, delay=5)
 async def step_1_add_to_cart(log_queue, page, sld_prefix):
-    button_selector = f'[id^="transfer-button-{sld_prefix}"]'
-    log_queue.put_nowait(f"[*] [STEP 1/4] Targeting main row button for: {sld_prefix}")
-    button_locator = page.locator(button_selector).first
+    log_queue.put_nowait(f"[*] [STEP 1/4] Scanning structural cart layout targets for: {sld_prefix}")
+    
+    # Dynamic element definitions to handle registrations vs transfer states cleanly
+    register_btn = page.locator(f'[id^="register-button-{sld_prefix}"]').first
+    transfer_btn = page.locator(f'[id^="transfer-button-{sld_prefix}"]').first
+    generic_btn = page.locator('button[id*="-button-"]').first
+    
+    if await register_btn.count() > 0:
+        button_locator = register_btn
+        log_queue.put_nowait("[*] Match Type Confirmed: Target is AVAILABLE for new registration.")
+    elif await transfer_btn.count() > 0:
+        button_locator = transfer_btn
+        log_queue.put_nowait("[*] Match Type Confirmed: Target flagged as DOMAIN TRANSFER.")
+    else:
+        button_locator = generic_btn
+        log_queue.put_nowait("[WARN] Specific cart buttons matching prefix missing. Attempting structural fallback context wrapper...")
+
     await button_locator.wait_for(state="visible", timeout=10000)
     await button_locator.scroll_into_view_if_needed()
     await button_locator.click()
-    log_queue.put_nowait("[SUCCESS] Step 1 complete: Main row action clicked.")
+    log_queue.put_nowait("[SUCCESS] Step 1 complete: Element clicked and bounded to current cart instance.")
 
 @retry_async_action(retries=3, delay=5)
 async def step_2_remove_addon(log_queue, page):
@@ -299,7 +313,7 @@ async def stream_integrated_workflow(log_queue, username, custom_sld, first_name
         else:
             log_queue.put_nowait("[WARN] Failed to intercept structural invoice panel context within time boundaries.")
         
-        # Build payload adding the custom username field
+        # Build transaction payload metadata
         final_payload = {
             "status": "COMPLETE",
             "username": username,
@@ -315,11 +329,20 @@ async def stream_integrated_workflow(log_queue, username, custom_sld, first_name
         print(f"[DISPATCHING] Pipeline finished for user '{username}'. Transmitting storage payload to bizna.store...")
         log_queue.put_nowait(f"FINAL_RESULT:{json.dumps(final_payload)}")
 
-        # Safely run synchronous urllib script using loop executor to prevent thread blocking
+        # Execute safe synchronization wrapper inside the thread pool executor to capture pipeline results 
+        def execute_sync(payload):
+            try:
+                print("[BACKGROUND THREAD] Triggering storage payload routing block...")
+                return append_domain_record(payload)
+            except Exception as e:
+                print(f"[CRITICAL SYNC FAILURE] Method execution threw an untrapped error: {e}")
+                return False
+
         loop = asyncio.get_running_loop()
-        sync_success = await loop.run_in_executor(None, append_domain_record, final_payload)
+        sync_success = await loop.run_in_executor(None, execute_sync, final_payload)
         
-        print(f"[DISPATCH RESULT] External storage synchronization success state: {sync_success}")
+        print(f"[DISPATCH RESULT] External storage synchronization state returned: {sync_success}")
+        log_queue.put_nowait(f"[*] Storage transmission success marker status: {sync_success}")
 
     except Exception as workflow_error:
         print(f"[CRITICAL FAILURE] Pipeline collapsed for user '{username}'. Error: {workflow_error}")
@@ -444,7 +467,6 @@ def http_stream_trigger_endpoint():
 
     input_data = request.get_json(silent=True) or {}
 
-    # Read username parameter along with domain metadata
     custom_username = input_data.get('username', 'anonymous').strip()
     custom_domain   = input_data.get('domain', '').strip()
     first_name      = input_data.get('first_name', 'ben').strip()
@@ -454,7 +476,6 @@ def http_stream_trigger_endpoint():
     custom_phone    = input_data.get('phone', '+254712345678').strip()
     payment_method  = input_data.get('payment_method', 'paybill').strip()
 
-    # CRITICAL: Print to stdout immediately to visible stream logs inside Render dash
     print(f"\n[RENDER HTTP CALL] Incoming POST request received on /api/stream")
     print(f" -> Operator Username : {custom_username}")
     print(f" -> Target Domain Prefix: {custom_domain}")
@@ -479,7 +500,6 @@ def http_stream_trigger_endpoint():
 
     dummy_log_queue = asyncio.Queue()
 
-    # Schedule automation execution within the dedicated runner thread threadsafe context
     asyncio.run_coroutine_threadsafe(
         stream_integrated_workflow(
             dummy_log_queue, custom_username, custom_domain, first_name, last_name, 
