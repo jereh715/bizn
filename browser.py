@@ -268,7 +268,7 @@ async def trigger_mpesa_express_stk_push(log_queue, page):
     log_queue.put_nowait("[SUCCESS] M-PESA Express STK Push handshake sent successfully out to handset device!")
 
 
-# --- INTEGRATED STREAM COORIDNATORS ---
+# --- INTEGRATED STREAM COORDINATORS ---
 
 async def stream_integrated_workflow(log_queue, custom_sld, first_name, last_name, custom_email, custom_phone, custom_password, payment_method):
     global GLOBAL_BROWSER
