@@ -306,8 +306,9 @@ async def stream_integrated_workflow(log_queue, custom_sld, first_name, last_nam
         log_queue.put_nowait("DONE")
 
 
-# --- OPTIMIZED & FIXED: ASYNCHRONOUS DIRECT CARTS DOMAIN CHECKER WORKFLOW ---
+# --- HIGHLY OPTIMIZED: JS-SAFE BROWSER DOMAIN CHECKER WORKFLOW ---
 
+@retry_async_action(retries=3, delay=5)
 async def stream_domain_check_workflow(log_queue, custom_sld):
     global GLOBAL_BROWSER
     if not GLOBAL_BROWSER:
@@ -315,32 +316,42 @@ async def stream_domain_check_workflow(log_queue, custom_sld):
         log_queue.put_nowait("DONE")
         return
 
-    # Strip domain extensions if mistakenly submitted by user
     domain_clean = re.sub(r'\.[a-zA-Z.]+$', '', custom_sld)
     full_target_domain = f"{domain_clean}.co.ke"
-
-    # FIXED: Re-added &currency=3 to sync layouts perfectly with the active cart rules
     direct_cart_url = f"https://my.hostafrica.com/cart.php?a=add&domain=register&sld={domain_clean}&tld=.co.ke&currency=3"
 
-    log_queue.put_nowait(f"[*] Initializing isolation context for scan task: {full_target_domain}")
+    log_queue.put_nowait(f"[*] Initializing optimized isolation context for: {full_target_domain}")
+    
     context = await GLOBAL_BROWSER.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/124.0.0.0 Safari/537.36",
-        viewport={'width': 1920, 'height': 1080}
+        viewport={'width': 1280, 'height': 720}  # Smaller surface window consumes fewer host system resources
     )
     page = await context.new_page()
 
+    # --- OPTIMIZATION ROUTE: Aggressively block heavy asset tracking and media files ---
+    async def intercept_and_drop_assets(route):
+        unnecessary_types = ["image", "stylesheet", "font", "media"]
+        if route.request.resource_type in unnecessary_types or "google-analytics" in route.request.url:
+            await route.abort()
+        else:
+            await route.continue_()
+            
+    await page.route("**/*", intercept_and_drop_assets)
+
     try:
-        log_queue.put_nowait(f"[*] Injected deep link payload navigation targeting: {direct_cart_url}")
-        await page.goto(direct_cart_url, wait_until="load", timeout=30000)
+        log_queue.put_nowait("[*] Dispatching fast-load pipeline request...")
         
-        log_queue.put_nowait("[*] Awaiting layout data parsing generation...")
+        # Pull layout controls immediately upon structural document stabilization
+        await page.goto(direct_cart_url, wait_until="domcontentloaded", timeout=20000)
         
-        # FIXED: Explicitly wait until elements are parsed and mounted by Vue engine
+        log_queue.put_nowait("[*] Awaiting dynamic Vue engine component mount...")
+        
+        # Halt ONLY until dynamic row components or internal error alerts match inside the DOM tree
         try:
-            await page.wait_for_selector("div.v-row--no-gutters", timeout=12000)
+            await page.wait_for_selector("div.v-row--no-gutters, div.v-messages__message", timeout=8000)
         except Exception:
-            log_queue.put_nowait("[WARN] Matrix elements delayed. Running direct context parse step.")
-        
+            log_queue.put_nowait("[WARN] Element matrix delayed. Attempting immediate fall-through parse.")
+
         html_content = await page.content()
         soup = BeautifulSoup(html_content, 'html.parser')
         
@@ -380,7 +391,6 @@ async def stream_domain_check_workflow(log_queue, custom_sld):
             else:
                 status = "AVAILABLE"
 
-            # If we already flagged it as registered with HostAfrica, skip double-adding the target row
             if found_domain.lower() == full_target_domain.lower() and is_target_handled:
                 continue
 
