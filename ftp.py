@@ -3,7 +3,7 @@ import json
 
 # --- TARGET CONFIGURATION ---
 SECRET_KEY = "Mambus_Secure_Vault_2026_Tokens"
-# We append the key straight to the URL so firewalls cannot strip it out
+# We append the key straight to the URL string so proxies cannot strip it out
 API_ENDPOINT_URL = f"http://bizna.store/pay/index.php?auth={SECRET_KEY}" 
 
 def append_domain_record(payload):
