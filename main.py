@@ -19,35 +19,37 @@ sock = Sock(app)
 # --- CONFIGURATION ---
 HOMEPAGE_URL = "https://www.hostafrica.ke/"
 
-# WEB SYSTEM SECURE APP ENDPOINT ROUTING
-SECRET_KEY = "Mambus_Secure_Vault_2026_Tokens"
-API_ENDPOINT_URL = f"http://bizna.store/pay/index.php?auth={SECRET_KEY}"
-
 GLOBAL_P = None
 GLOBAL_BROWSER = None
 LOOP = None
 
 
-# --- BULLETPROOF HTTP STORAGE ADAPTER ---
+# --- BULLETPROOF HTTP STORAGE ADAPTER (SUPABASE REST) ---
 
 def append_domain_record_to_web(payload):
     """
-    Bypasses FTP passive connection timeouts and header-stripping firewall filters 
-    by dispatching synchronized execution tracking arrays straight to index.php's 
-    secure endpoint using URL query parameter authentication signatures.
+    Bypasses external connection drops and heavy SDK dependencies by writing 
+    synchronized execution logs directly to the Supabase REST table endpoint 
+    using hardcoded security signatures.
     """
-    print(f"[*] Dispatching secure web storage handshake to endpoint for: {payload.get('domain')}")
+    target_url = "https://zeccnkbazpqjztjrifsx.supabase.co/rest/v1/domain_records"
+    service_role_key = "sb_secret_xtVXHEqfMyEkeuSoob8sKw_awiu8BEH"
+    
+    print(f"[*] Dispatching secure web storage handshake to Supabase for: {payload.get('domain')}")
     
     try:
         # Convert workflow payload dictionary to raw JSON bytes
         json_bytes = json.dumps(payload).encode('utf-8')
         
-        # Build standard request envelope with plain content-type definition
+        # Build standard request envelope with mandatory PostgREST authentication headers
         req = urllib.request.Request(
-            API_ENDPOINT_URL,
+            target_url,
             data=json_bytes,
             headers={
                 'Content-Type': 'application/json',
+                'apikey': service_role_key,
+                'Authorization': f'Bearer {service_role_key}',
+                'Prefer': 'return=minimal',
                 'User-Agent': 'Render-Automation-Engine'
             },
             method='POST'
@@ -55,18 +57,18 @@ def append_domain_record_to_web(payload):
         
         # Process request execution stream with a strict 15-second response limit
         with urllib.request.urlopen(req, timeout=15) as response:
-            response_body = response.read().decode('utf-8')
-            response_data = json.loads(response_body)
+            status_code = response.getcode()
             
-            if response_data.get("status") == "SUCCESS":
-                print("[SUCCESS] Web API Storage Synchronization Complete.")
+            # PostgREST returns 201 Created on successful row insertion
+            if status_code in (200, 201):
+                print("[SUCCESS] Supabase Database Synchronization Complete.")
                 return True
             else:
-                print(f"[STORAGE ERROR] Web endpoint rejected payload: {response_data.get('message')}")
+                print(f"[STORAGE ERROR] Supabase backend rejected payload with status code: {status_code}")
                 return False
                 
     except Exception as http_err:
-        print(f"[STORAGE PIPELINE FAILURE] Web endpoint routing collapsed: {http_err}")
+        print(f"[STORAGE PIPELINE FAILURE] Supabase REST route collapsed: {http_err}")
         return False
 
 
@@ -339,11 +341,12 @@ async def stream_integrated_workflow(log_queue, custom_sld, first_name, last_nam
         else:
             log_queue.put_nowait("[WARN] Failed to intercept structural invoice panel context within time boundaries.")
         
+        # Build structure explicitly matched to the domain_records schema
         final_payload = {
-            "status": "COMPLETE",
+            "username": f"{first_name} {last_name}".strip(),
             "domain": domain_name,
             "email": custom_email,
-            "password": password_captured,
+            "password": password_captured if password_captured else custom_password,
             "invoice_url": invoice_url if invoice_url else "Timeout Redirect",
             "invoice_id": invoice_id,
             "payment_method": payment_method,
@@ -351,17 +354,17 @@ async def stream_integrated_workflow(log_queue, custom_sld, first_name, last_nam
         }
         log_queue.put_nowait(f"FINAL_RESULT:{json.dumps(final_payload)}")
 
-        # === BULLETPROOF WEB API ROUTING INJECTION ===
-        log_queue.put_nowait("[*] Storage Pipeline: Synchronizing transaction data to remote web entry nodes...")
+        # === BULLETPROOF SUPABASE API ROUTING INJECTION ===
+        log_queue.put_nowait("[*] Storage Pipeline: Synchronizing transaction data to remote Supabase entry nodes...")
         
         # Execute HTTP POST synchronization safely inside standard background loop
         loop = asyncio.get_event_loop()
         sync_success = await loop.run_in_executor(None, append_domain_record_to_web, final_payload)
         
         if sync_success:
-            log_queue.put_nowait("[SUCCESS] Registration state safely preserved on external hosting structure.")
+            log_queue.put_nowait("[SUCCESS] Registration state safely preserved on external database structure.")
         else:
-            log_queue.put_nowait("[WARN] Local execution finished, but remote HTTP tracking write failed.")
+            log_queue.put_nowait("[WARN] Local execution finished, but Supabase HTTP tracking write failed.")
         # ============================================
 
     except Exception as workflow_error:
@@ -501,14 +504,14 @@ def logs_websocket_stream_endpoint(ws):
 
     if "@gmail.com" in custom_email.lower() and "+" not in custom_email:
         parts = custom_email.split('@')
-        username = parts[0]
-        domain_name = parts[1]
+        username_part = parts[0]
+        domain_name_part = parts[1]
         
         epoch_secs = int(time.time())
         unique_token = epoch_secs % 1000000
         unique_token_str = f"{unique_token:06d}"
         
-        custom_email = f"{username}+{unique_token_str}@{domain_name}"
+        custom_email = f"{username_part}+{unique_token_str}@{domain_name_part}"
 
     log_queue = asyncio.Queue()
 
