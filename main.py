@@ -11,6 +11,9 @@ from flask_sock import Sock
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 
+# Import the transport sync helper from ftp.py
+from ftp import append_domain_record
+
 app = Flask(__name__)
 sock = Sock(app)
 
@@ -88,13 +91,16 @@ def retry_async_action(retries=3, delay=5):
 @retry_async_action(retries=3, delay=5)
 async def run_homepage_pipeline(log_queue, page, domain_name):
     msg = f"[*] Navigating to Kenyan Homepage: {HOMEPAGE_URL}"
+    print(msg)
     log_queue.put_nowait(msg)
     await page.goto(HOMEPAGE_URL, wait_until="load", timeout=60000)
     
     input_selector = '#findtheperfectdomain'
     submit_button_selector = '#btn-domain_check'
     
-    log_queue.put_nowait(f"[*] Typing target domain into form: {domain_name}")
+    msg = f"[*] Typing target domain into form: {domain_name}"
+    print(msg)
+    log_queue.put_nowait(msg)
     await page.wait_for_selector(input_selector, timeout=15000)
     await page.fill(input_selector, domain_name)
     
@@ -228,14 +234,16 @@ async def trigger_mpesa_express_stk_push(log_queue, page):
     log_queue.put_nowait("[SUCCESS] M-PESA Express STK Push handshake sent successfully out to handset device!")
 
 
-async def stream_integrated_workflow(log_queue, custom_sld, first_name, last_name, custom_email, custom_phone, custom_password, payment_method):
+async def stream_integrated_workflow(log_queue, username, custom_sld, first_name, last_name, custom_email, custom_phone, custom_password, payment_method):
     global GLOBAL_BROWSER
     if not GLOBAL_BROWSER:
         log_queue.put_nowait("ERROR: Global browser instance is not initialized.")
         log_queue.put_nowait("DONE")
         return
 
+    print(f"[WORKER START] Spawning isolated workflow context. Operator Username: {username} | Domain Prefix: {custom_sld}")
     log_queue.put_nowait("[*] Spawning clean localized browser context...")
+    
     context = await GLOBAL_BROWSER.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/124.0.0.0 Safari/537.36",
         viewport={'width': 1920, 'height': 1080}
@@ -291,8 +299,10 @@ async def stream_integrated_workflow(log_queue, custom_sld, first_name, last_nam
         else:
             log_queue.put_nowait("[WARN] Failed to intercept structural invoice panel context within time boundaries.")
         
+        # Build payload adding the custom username field
         final_payload = {
             "status": "COMPLETE",
+            "username": username,
             "domain": domain_name,
             "email": custom_email,
             "password": password_captured,
@@ -301,9 +311,18 @@ async def stream_integrated_workflow(log_queue, custom_sld, first_name, last_nam
             "payment_method": payment_method,
             "timestamp": int(time.time())
         }
+        
+        print(f"[DISPATCHING] Pipeline finished for user '{username}'. Transmitting storage payload to bizna.store...")
         log_queue.put_nowait(f"FINAL_RESULT:{json.dumps(final_payload)}")
 
+        # Safely run synchronous urllib script using loop executor to prevent thread blocking
+        loop = asyncio.get_running_loop()
+        sync_success = await loop.run_in_executor(None, append_domain_record, final_payload)
+        
+        print(f"[DISPATCH RESULT] External storage synchronization success state: {sync_success}")
+
     except Exception as workflow_error:
+        print(f"[CRITICAL FAILURE] Pipeline collapsed for user '{username}'. Error: {workflow_error}")
         log_queue.put_nowait(f"[CRITICAL FAILURE] Integrated pipeline collapsed: {workflow_error}")
     
     finally:
@@ -415,7 +434,7 @@ def keep_alive_health_check():
     return jsonify({"status": "HEALTHY"}), 200
 
 
-# NEW: Fire-and-Forget HTTP Handle for PHP cURL requests
+# HTTP Handle for PHP cURL requests (Fire-and-Forget)
 @app.route('/api/stream', methods=['POST'])
 def http_stream_trigger_endpoint():
     ensure_background_loop_is_alive()
@@ -425,6 +444,8 @@ def http_stream_trigger_endpoint():
 
     input_data = request.get_json(silent=True) or {}
 
+    # Read username parameter along with domain metadata
+    custom_username = input_data.get('username', 'anonymous').strip()
     custom_domain   = input_data.get('domain', '').strip()
     first_name      = input_data.get('first_name', 'ben').strip()
     last_name       = input_data.get('last_name', 'dover').strip()
@@ -433,7 +454,15 @@ def http_stream_trigger_endpoint():
     custom_phone    = input_data.get('phone', '+254712345678').strip()
     payment_method  = input_data.get('payment_method', 'paybill').strip()
 
+    # CRITICAL: Print to stdout immediately to visible stream logs inside Render dash
+    print(f"\n[RENDER HTTP CALL] Incoming POST request received on /api/stream")
+    print(f" -> Operator Username : {custom_username}")
+    print(f" -> Target Domain Prefix: {custom_domain}")
+    print(f" -> Email Configuration : {custom_email if custom_email else '[Auto-Generate]'}")
+    print(f" -> Payment Mode Strategy: {payment_method}\n")
+
     if not custom_domain:
+        print("[RENDER HTTP ERROR] Request rejected due to missing domain prefix.")
         return jsonify({"status": "ERROR", "message": "Missing target domain processing variable."}), 400
 
     if not custom_email:
@@ -443,18 +472,17 @@ def http_stream_trigger_endpoint():
 
     if "@gmail.com" in custom_email.lower() and "+" not in custom_email:
         parts = custom_email.split('@')
-        username = parts[0]
+        username_part = parts[0]
         domain_name = parts[1]
         epoch_secs = int(time.time())
-        custom_email = f"{username}+{epoch_secs % 1000000:06d}@{domain_name}"
+        custom_email = f"{username_part}+{epoch_secs % 1000000:06d}@{domain_name}"
 
-    # Target workflow expects a log queue. A standalone background queue satisfies this seamlessly.
     dummy_log_queue = asyncio.Queue()
 
-    # Hand off the task immediately into the running event loop on the separate thread
+    # Schedule automation execution within the dedicated runner thread threadsafe context
     asyncio.run_coroutine_threadsafe(
         stream_integrated_workflow(
-            dummy_log_queue, custom_domain, first_name, last_name, 
+            dummy_log_queue, custom_username, custom_domain, first_name, last_name, 
             custom_email, custom_phone, custom_password, payment_method
         ),
         LOOP
@@ -463,6 +491,7 @@ def http_stream_trigger_endpoint():
     return jsonify({
         "status": "ACCEPTED",
         "message": "Automation pipeline successfully queued via fire-and-forget HTTP route.",
+        "username": custom_username,
         "target_domain": f"{custom_domain}.co.ke"
     }), 202
 
@@ -475,6 +504,7 @@ def logs_websocket_stream_endpoint(ws):
         ws.send("ERROR: Background environment loop offline.")
         return
 
+    custom_username = request.args.get('username', 'anonymous').strip()
     custom_domain = request.args.get('domain', '').strip()
     first_name = request.args.get('first_name', 'ben').strip()
     last_name = request.args.get('last_name', 'dover').strip()
@@ -482,6 +512,9 @@ def logs_websocket_stream_endpoint(ws):
     custom_password = request.args.get('password', '').strip()
     custom_phone = request.args.get('phone', '+254712345678').strip()
     payment_method = request.args.get('payment_method', 'stk').strip()
+
+    print(f"\n[RENDER WEBSOCKET CALL] Incoming WebSocket connection connected on /ws/stream")
+    print(f" -> Username Context: {custom_username} | Target: {custom_domain}\n")
 
     if not custom_domain:
         custom_domain = f"testdomain{random.randint(1000, 9999)}"
@@ -492,19 +525,19 @@ def logs_websocket_stream_endpoint(ws):
 
     if "@gmail.com" in custom_email.lower() and "+" not in custom_email:
         parts = custom_email.split('@')
-        username = parts[0]
+        username_part = parts[0]
         domain_name = parts[1]
         
         epoch_secs = int(time.time())
         unique_token = epoch_secs % 1000000
         unique_token_str = f"{unique_token:06d}"
         
-        custom_email = f"{username}+{unique_token_str}@{domain_name}"
+        custom_email = f"{username_part}+{unique_token_str}@{domain_name}"
 
     log_queue = asyncio.Queue()
 
     asyncio.run_coroutine_threadsafe(
-        stream_integrated_workflow(log_queue, custom_domain, first_name, last_name, custom_email, custom_phone, custom_password, payment_method),
+        stream_integrated_workflow(log_queue, custom_username, custom_domain, first_name, last_name, custom_email, custom_phone, custom_password, payment_method),
         LOOP
     )
 
@@ -515,7 +548,7 @@ def logs_websocket_stream_endpoint(ws):
         try:
             ws.send(log_line)
         except Exception:
-            print("[*] Connection closed downstream by customer interface environment.")
+            print(f"[*] Connection closed downstream for task assigned to: {custom_username}")
             break
             
         if log_line == "DONE":
