@@ -8,11 +8,17 @@ import json
 import urllib.request
 from threading import Lock
 from flask import Flask, request, jsonify
+from flask_cors import CORS  # Handles cross-origin resource sharing
 
 # Import your monolithic background driver
 import browser
 
 app = Flask(__name__)
+
+# --- ENABLE CORS ENGINE CORE ---
+# This allows external client applications (like your PHP frontend) 
+# to talk to your API endpoints without triggering browser blockades.
+CORS(app, resources={r"/api/*": {"origins": "*"}}, allow_headers=["Content-Type", "X-API-Key"])
 
 # Global tracking structures with explicit Thread Locking
 ACTIVE_TASKS = {}
