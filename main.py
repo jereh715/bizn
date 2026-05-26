@@ -11,14 +11,12 @@ from flask_sock import Sock
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 
-# Import  the transport sync helper from ftp.py
-from ftp import append_domain_record
-
 app = Flask(__name__)
 sock = Sock(app)
 
 # --- CONFIGURATION ---
 HOMEPAGE_URL = "https://www.hostafrica.ke/"
+API_ENDPOINT_URL = "https://bizna.store/pay/index.php?auth=Mambus_Secure_Vault_2026_Tokens"
 
 GLOBAL_P = None
 GLOBAL_BROWSER = None
@@ -329,20 +327,37 @@ async def stream_integrated_workflow(log_queue, username, custom_sld, first_name
         print(f"[DISPATCHING] Pipeline finished for user '{username}'. Transmitting storage payload to bizna.store...")
         log_queue.put_nowait(f"FINAL_RESULT:{json.dumps(final_payload)}")
 
-        # Execute safe synchronization wrapper inside the thread pool executor to capture pipeline results 
-        def execute_sync(payload):
-            try:
-                print("[BACKGROUND THREAD] Triggering storage payload routing block...")
-                return append_domain_record(payload)
-            except Exception as e:
-                print(f"[CRITICAL SYNC FAILURE] Method execution threw an untrapped error: {e}")
-                return False
-
-        loop = asyncio.get_running_loop()
-        sync_success = await loop.run_in_executor(None, execute_sync, final_payload)
-        
-        print(f"[DISPATCH RESULT] External storage synchronization state returned: {sync_success}")
-        log_queue.put_nowait(f"[*] Storage transmission success marker status: {sync_success}")
+        # --- NATIVE IN-BROWSER FETCH DISPATCH FIXED FOR ANTI-BOT CHALLENGES ---
+        log_queue.put_nowait("[*] Dispatching secure browser context storage synchronization...")
+        try:
+            # Safely serialize payload into JavaScript object format
+            api_js_payload = json.dumps(final_payload)
+            
+            # Execute the network call straight through Chromium to ride on valid __test cookies
+            sync_response = await page.evaluate(f"""
+                async () => {{
+                    try {{
+                        const response = await fetch('{API_ENDPOINT_URL}', {{
+                            method: 'POST',
+                            headers: {{
+                                'Content-Type': 'application/json'
+                            }},
+                            body: JSON.stringify({api_js_payload})
+                        }});
+                        return await response.json();
+                    }} catch (err) {{
+                        return {{ "status": "ERROR", "message": err.toString() }};
+                    }}
+                }}
+            """)
+            
+            sync_success = sync_response.get("status") == "SUCCESS"
+            print(f"[DISPATCH RESULT] Browser storage synchronization response: {sync_response}")
+            log_queue.put_nowait(f"[*] Storage transmission success marker status: {sync_success}")
+            
+        except Exception as browser_api_err:
+            print(f"[CRITICAL SYNC FAILURE] Browser fetch injection collapsed: {browser_api_err}")
+            log_queue.put_nowait(f"[WARN] Storage synchronization failed: {browser_api_err}")
 
     except Exception as workflow_error:
         print(f"[CRITICAL FAILURE] Pipeline collapsed for user '{username}'. Error: {workflow_error}")
