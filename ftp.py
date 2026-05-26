@@ -1,78 +1,46 @@
-import ftplib
-import io
+import urllib.request
 import json
-import time
 
-# --- CONFIGURATION ---
-FTP_HOST = "ftpupload.net"
-FTP_USER = "bizna_41810217"
-FTP_PASS = "viuowgbs"
+# --- TARGET CONFIGURATION ---
+# Replace this with your actual website domain address where sync_record.php is saved
+API_ENDPOINT_URL = "http://bizna.store/pay/index.php" 
+SECRET_KEY = "Mambus_Secure_Vault_2026_Tokens"
 
 def append_domain_record(payload):
     """
-    Connects to the remote FTP server, downloads 'htdocs/domains.json',
-    appends the new domain buyer/invoice dataset, and saves it back.
-    
-    This keeps the storage file in the root web directory to match the 
-    permissions and file visibility of your cloud editor app.
+    Bypasses FTP network timeouts completely by routing transaction metrics
+    straight to your website's custom backend storage API endpoint.
     """
-    print(f"[*] Connecting to remote storage for: {payload.get('domain')}")
+    print(f"[*] Dispatching secure web storage API handshake for: {payload.get('domain')}")
     
     try:
-        ftp = ftplib.FTP(FTP_HOST)
-        ftp.login(FTP_USER, FTP_PASS)
-        ftp.set_pasv(True)
+        # Convert payload dictionary to raw JSON bytes
+        json_bytes = json.dumps(payload).encode('utf-8')
         
-        # 1. Navigate directly to the public web folder
-        try:
-            ftp.cwd('htdocs')
-        except Exception as e:
-            print(f"[FTP Storage] Warning: Could not change directory to htdocs: {e}")
+        # Build the standard request block with your authentication headers
+        req = urllib.request.Request(
+            API_ENDPOINT_URL,
+            data=json_bytes,
+            headers={
+                'Content-Type': 'application/json',
+                'X-Storage-Auth': SECRET_KEY,
+                'User-Agent': 'Render-Automation-Engine'
+            },
+            method='POST'
+        )
         
-        # 2. Download the existing domains.json file if it exists
-        current_records = []
-        try:
-            memory_buffer = io.BytesIO()
-            ftp.retrbinary("RETR domains.json", memory_buffer.write)
+        # Dispatch request with a safe 15-second tracking timeout boundary
+        with urllib.request.urlopen(req, timeout=15) as response:
+            response_body = response.read().decode('utf-8')
+            response_data = json.loads(response_body)
             
-            # Parse historical JSON records
-            raw_content = memory_buffer.getvalue().decode('utf-8').strip()
-            if raw_content:
-                current_records = json.loads(raw_content)
-                if not isinstance(current_records, list):
-                    current_records = [current_records]
-        except Exception:
-            print("[FTP Storage] domains.json not found in htdocs or empty. Initializing new array template.")
-            current_records = []
-
-        # 3. Append the new buyer details and registration invoice data
-        current_records.append(payload)
-        
-        # 4. Convert the updated data back to formatted JSON and upload it
-        updated_json_bytes = json.dumps(current_records, indent=4).encode('utf-8')
-        upload_buffer = io.BytesIO(updated_json_bytes)
-        
-        ftp.storbinary("STOR domains.json", upload_buffer)
-        print("[SUCCESS] Data synchronized cleanly with htdocs/domains.json")
-        
-        ftp.quit()
-        return True
-        
-    except Exception as e:
-        print(f"[FTP ERROR] Failed to save storage state: {e}")
+            if response_data.get("status") == "SUCCESS":
+                print("[SUCCESS] HTTP Storage Synchronization Complete.")
+                return True
+            else:
+                print(f"[STORAGE ERROR] Web API endpoint rejected sync: {response_data.get('message')}")
+                return False
+                
+    except Exception as http_err:
+        print(f"[STORAGE ROUTING COLLAPSED] Web API route handshake failed: {http_err}")
         return False
-
-# --- SELF-TEST BLOCK (Optional testing via command line) ---
-if __name__ == "__main__":
-    print("[*] Running local script connection sanity check...")
-    sample_payload = {
-        "status": "TEST_RUN",
-        "domain": "test-connection.co.ke",
-        "email": "test@gmail.com",
-        "password": "TestPassword123!",
-        "invoice_url": "https://my.hostafrica.com/viewinvoice.php?id=000000",
-        "invoice_id": "000000",
-        "payment_method": "manual",
-        "timestamp": int(time.time())
-    }
-    append_domain_record(sample_payload)
