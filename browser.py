@@ -17,45 +17,66 @@ LOOP = None
 HOMEPAGE_URL = "https://www.hostafrica.ke/"
 
 
-# --- SUPABASE REST STORAGE ADAPTER ---
+# --- SUPABASE REST STORAGE ADAPTER (TWO-PHASE SUPPORT) ---
 
-def append_domain_record_to_web(payload):
+def sync_domain_record_to_web(payload, record_id=None):
     """
-    Writes execution records directly to the Supabase REST table endpoint 
-    using hardcoded signatures.
+    Handles both initial insertion (POST) and subsequent updates (PATCH).
+    If record_id is provided, it targets that specific row via its ID.
     """
-    target_url = "https://zeccnkbazpqjztjrifsx.supabase.co/rest/v1/domain_records"
+    base_url = "https://zeccnkbazpqjztjrifsx.supabase.co/rest/v1/domain_records"
     service_role_key = "sb_secret_xtVXHEqfMyEkeuSoob8sKw_awiu8BEH"
     
-    print(f"[*] Dispatching secure web storage handshake to Supabase for: {payload.get('domain')}")
-    
+    if record_id:
+        # Phase 2: Updating the existing pending record
+        target_url = f"{base_url}?id=eq.{record_id}"
+        method = 'PATCH'
+        print(f"[*] Updating existing record ID {record_id} to SUCCESS status...")
+    else:
+        # Phase 1: Creating a brand new pending record
+        target_url = base_url
+        method = 'POST'
+        print(f"[*] Creating immediate PENDING record for: {payload.get('domain')}")
+        
     try:
         json_bytes = json.dumps(payload).encode('utf-8')
+        headers = {
+            'Content-Type': 'application/json',
+            'apikey': service_role_key,
+            'Authorization': f'Bearer {service_role_key}',
+            'User-Agent': 'Render-Automation-Engine'
+        }
+        
+        # Request Supabase to return the inserted row data back to get its ID
+        if method == 'POST':
+            headers['Prefer'] = 'return=representation'
+        else:
+            headers['Prefer'] = 'return=minimal'
+            
         req = urllib.request.Request(
             target_url,
             data=json_bytes,
-            headers={
-                'Content-Type': 'application/json',
-                'apikey': service_role_key,
-                'Authorization': f'Bearer {service_role_key}',
-                'Prefer': 'return=minimal',
-                'User-Agent': 'Render-Automation-Engine'
-            },
-            method='POST'
+            headers=headers,
+            method=method
         )
         
         with urllib.request.urlopen(req, timeout=15) as response:
             status_code = response.getcode()
             if status_code in (200, 201):
+                if method == 'POST':
+                    res_data = json.loads(response.read().decode('utf-8'))
+                    if isinstance(res_data, list) and len(res_data) > 0:
+                        print("[SUCCESS] Initial PENDING state saved to Supabase.")
+                        return res_data[0].get('id')  # Returns the DB row ID for subsequent patch
                 print("[SUCCESS] Supabase Database Synchronization Complete.")
                 return True
             else:
                 print(f"[STORAGE ERROR] Supabase backend rejected payload with status code: {status_code}")
-                return False
+                return None if method == 'POST' else False
                 
     except Exception as http_err:
         print(f"[STORAGE PIPELINE FAILURE] Supabase REST route collapsed: {http_err}")
-        return False
+        return None if method == 'POST' else False
 
 
 # --- RUNTIME LOOPS MANAGEMENT ---
@@ -276,6 +297,32 @@ async def stream_integrated_workflow(log_queue, auth_username, custom_sld, first
         log_queue.put_nowait("DONE")
         return
 
+    domain_name = f"{custom_sld}.co.ke"
+    loop = asyncio.get_event_loop()
+
+    # =========================================================================
+    # PHASE 1: IMMEDIATE INITIAL SAVE (Fills baseline details, status=PENDING)
+    # =========================================================================
+    log_queue.put_nowait("[*] Registering initial intent handshake with database...")
+    initial_payload = {
+        "username": auth_username,
+        "domain": domain_name,
+        "email": custom_email,
+        "status": "PENDING",
+        "timestamp": int(time.time()),
+        "invoice_url": "Processing automation pipelines...",
+        "invoice_id": "PENDING",
+        "payment_method": payment_method
+    }
+    
+    # Push to Supabase immediately and get back the unique generated row key
+    db_record_id = await loop.run_in_executor(None, sync_domain_record_to_web, initial_payload)
+    if db_record_id:
+        log_queue.put_nowait(f"[SUCCESS] Tracking record live. Record ID Reference: {db_record_id}")
+    else:
+        log_queue.put_nowait("[WARN] Failed to establish early tracking hook. Continuing execution...")
+
+    # Begin browser setup
     log_queue.put_nowait("[*] Spawning clean localized browser context...")
     context = await GLOBAL_BROWSER.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -283,7 +330,6 @@ async def stream_integrated_workflow(log_queue, auth_username, custom_sld, first
     )
     
     page = await context.new_page()
-    domain_name = f"{custom_sld}.co.ke"
 
     try:
         await run_homepage_pipeline(log_queue, page, domain_name)
@@ -296,7 +342,6 @@ async def stream_integrated_workflow(log_queue, auth_username, custom_sld, first
         await step_3_click_pay_and_bypass_popup(log_queue, page)
         await asyncio.sleep(1.5)
         
-        # Form injection preserves discrete first_name and last_name mapping fields intact
         password_captured = await step_4_inject_form_and_complete(log_queue, page, first_name, last_name, custom_email, custom_phone, custom_password)
         
         log_queue.put_nowait("[*] Awaiting payment processing system confirmation redirect...")
@@ -333,7 +378,9 @@ async def stream_integrated_workflow(log_queue, auth_username, custom_sld, first
         else:
             log_queue.put_nowait("[WARN] Failed to intercept structural invoice panel context within time boundaries.")
         
-        # Cleaned payload uses the validated account username passed from main.py auth handlers
+        # =========================================================================
+        # PHASE 2: FINAL DATA UPDATE (Patches missing details, changes status to SUCCESS)
+        # =========================================================================
         final_payload = {
             "username": auth_username,
             "domain": domain_name,
@@ -342,23 +389,33 @@ async def stream_integrated_workflow(log_queue, auth_username, custom_sld, first
             "invoice_url": invoice_url if invoice_url else "Timeout Redirect",
             "invoice_id": invoice_id,
             "payment_method": payment_method,
+            "status": "SUCCESS",
             "timestamp": int(time.time())
         }
         log_queue.put_nowait(f"FINAL_RESULT:{json.dumps(final_payload)}")
 
-        log_queue.put_nowait("[*] Storage Pipeline: Synchronizing transaction data to remote Supabase entry nodes...")
-        
-        loop = asyncio.get_event_loop()
-        sync_success = await loop.run_in_executor(None, append_domain_record_to_web, final_payload)
-        
-        if sync_success:
-            log_queue.put_nowait("[SUCCESS] Registration state safely preserved on external database structure.")
+        if db_record_id:
+            log_queue.put_nowait("[*] Storage Pipeline: Finalizing record status on remote Supabase structures...")
+            sync_success = await loop.run_in_executor(None, sync_domain_record_to_web, final_payload, db_record_id)
+            
+            if sync_success:
+                log_queue.put_nowait("[SUCCESS] Registration state successfully marked as complete on database.")
+            else:
+                log_queue.put_nowait("[WARN] Local execution finished, but Supabase final patch update route failed.")
         else:
-            log_queue.put_nowait("[WARN] Local execution finished, but Supabase HTTP tracking write failed.")
+            # Fallback to standard insert if initial creation missed its hook earlier
+            log_queue.put_nowait("[*] Storage Pipeline Fallback: Performing standard direct row creation hook...")
+            await loop.run_in_executor(None, sync_domain_record_to_web, final_payload)
 
     except Exception as workflow_error:
         log_queue.put_nowait(f"[CRITICAL FAILURE] Integrated pipeline collapsed: {workflow_error}")
-    
+        # Optional: update state to FAILED if db_record_id is active
+        if db_record_id:
+            try:
+                failure_payload = {"status": "FAILED", "invoice_url": f"Automation Failed: {workflow_error}"}
+                await loop.run_in_executor(None, sync_domain_record_to_web, failure_payload, db_record_id)
+            except Exception:
+                pass
     finally:
         await context.close()
         log_queue.put_nowait("DONE")
