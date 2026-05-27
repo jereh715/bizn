@@ -85,7 +85,6 @@ async def init_global_browser():
     print("[SUCCESS] Global headless browser is ready for remote execution pipelines.")
 
 def ensure_background_loop_is_alive():
-    """Failsafe manager to boot the background thread if Gunicorn drops it inside Docker."""
     global LOOP
     if LOOP is None or not LOOP.is_running():
         print("[!] Background event loop detected as OFFLINE. Spawning new initialization thread...")
@@ -241,7 +240,7 @@ async def step_4_inject_form_and_complete(log_queue, page, first_name, last_name
     log_queue.put_nowait(f"[SUCCESS] Verified Active Form Registration Password: {recovered_password}")
 
     complete_btn = page.locator('form.v-form button .v-btn__content', has_text="Complete registration").first
-    await complete_btn.scroll_into_view_if_needed()
+    complete_btn.scroll_into_view_if_needed()
     
     log_queue.put_nowait("[*] Dispatching system submit action click downstream...")
     await complete_btn.click()
@@ -270,7 +269,7 @@ async def trigger_mpesa_express_stk_push(log_queue, page):
 
 # --- INTEGRATED STREAM COORDINATORS ---
 
-async def stream_integrated_workflow(log_queue, custom_sld, first_name, last_name, custom_email, custom_phone, custom_password, payment_method):
+async def stream_integrated_workflow(log_queue, auth_username, custom_sld, first_name, last_name, custom_email, custom_phone, custom_password, payment_method):
     global GLOBAL_BROWSER
     if not GLOBAL_BROWSER:
         log_queue.put_nowait("ERROR: Global browser instance is not initialized.")
@@ -297,6 +296,7 @@ async def stream_integrated_workflow(log_queue, custom_sld, first_name, last_nam
         await step_3_click_pay_and_bypass_popup(log_queue, page)
         await asyncio.sleep(1.5)
         
+        # Form injection preserves discrete first_name and last_name mapping fields intact
         password_captured = await step_4_inject_form_and_complete(log_queue, page, first_name, last_name, custom_email, custom_phone, custom_password)
         
         log_queue.put_nowait("[*] Awaiting payment processing system confirmation redirect...")
@@ -333,8 +333,9 @@ async def stream_integrated_workflow(log_queue, custom_sld, first_name, last_nam
         else:
             log_queue.put_nowait("[WARN] Failed to intercept structural invoice panel context within time boundaries.")
         
+        # Cleaned payload uses the validated account username passed from main.py auth handlers
         final_payload = {
-            "username": f"{first_name} {last_name}".strip(),
+            "username": auth_username,
             "domain": domain_name,
             "email": custom_email,
             "password": password_captured if password_captured else custom_password,
