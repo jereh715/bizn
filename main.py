@@ -6,6 +6,7 @@ import uuid
 import string
 import json
 import urllib.request
+import urllib.parse
 from threading import Lock
 from flask import Flask, request, jsonify
 from flask_cors import CORS  # Handles cross-origin resource sharing
@@ -57,7 +58,7 @@ def verify_api_key_in_supabase(api_key, username):
 
 def save_api_key_to_supabase(username, api_key, status):
     """
-    Saves a newly generated API key structural footprint into Supabase.
+    Boxes and saves a newly generated API key structural footprint into Supabase.
     """
     target_url = f"{SUPABASE_URL}/rest/v1/api_keys"
     payload = {
@@ -233,6 +234,53 @@ def check_task_status(task_id):
     if not task:
         return jsonify({"status": "NOT_FOUND", "message": "No transaction log footprints for this ID."}), 404
     return jsonify(task), 200
+
+
+@app.route('/api/domain_lookup', methods=['GET'])
+def lookup_domain_record():
+    """
+    Secure endpoint to fetch structural transaction updates directly from the 
+    Supabase domain_records matrix layout. Requires username, domain, and a matching valid API key.
+    """
+    # Extract query parameters from URL strings
+    username = request.args.get('username', '').strip()
+    domain = request.args.get('domain', '').strip()
+    client_api_key = request.headers.get('X-API-Key')
+
+    if not username or not domain:
+        return jsonify({"status": "ERROR", "message": "Missing required query string fields: 'username' and 'domain'"}), 400
+
+    # Gatekeep query using validation routine matching API Token + Username against Supabase mappings
+    if not client_api_key or not verify_api_key_in_supabase(client_api_key, username):
+        return jsonify({"status": "UNAUTHORIZED", "message": "Invalid, missing, or mismatched authentication context credentials."}), 401
+
+    # Query target domain record rows allocated specifically to this username scope
+    target_url = f"{SUPABASE_URL}/rest/v1/domain_records?username=eq.{urllib.parse.quote(username)}&domain=eq.{urllib.parse.quote(domain)}&select=*"
+
+    try:
+        req = urllib.request.Request(
+            target_url,
+            headers={
+                'apikey': SERVICE_ROLE_KEY,
+                'Authorization': f'Bearer {SERVICE_ROLE_KEY}'
+            },
+            method='GET'
+        )
+        with urllib.request.urlopen(req, timeout=12) as response:
+            records = json.loads(response.read().decode('utf-8'))
+            
+            if not records:
+                return jsonify({"status": "NOT_FOUND", "message": f"No active data row footprints registered for domain '{domain}' under user context."}), 404
+                
+            return jsonify({
+                "status": "SUCCESS",
+                "count": len(records),
+                "data": records
+            }), 200
+
+    except Exception as e:
+        print(f"[LOOKUP ERROR] Direct backend database mapping access failed: {e}")
+        return jsonify({"status": "ERROR", "message": f"Supabase sync target dropped: {str(e)}"}), 500
 
 
 if __name__ == "__main__":
