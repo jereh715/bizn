@@ -16,8 +16,6 @@ import browser
 app = Flask(__name__)
 
 # --- ENABLE CORS ENGINE CORE ---
-# This allows external client applications (like your PHP frontend) 
-# to talk to your API endpoints without triggering browser blockades.
 CORS(app, resources={r"/api/*": {"origins": "*"}}, allow_headers=["Content-Type", "X-API-Key"])
 
 # Global tracking structures with explicit Thread Locking
@@ -29,15 +27,16 @@ SUPABASE_URL = "https://zeccnkbazpqjztjrifsx.supabase.co"
 SERVICE_ROLE_KEY = "sb_secret_xtVXHEqfMyEkeuSoob8sKw_awiu8BEH"
 
 
-def verify_api_key_in_supabase(api_key):
+def verify_api_key_in_supabase(api_key, username):
     """
     Queries the api_keys table directly via the REST interface 
-    to see if the provided key exists and is valid.
+    to see if the provided key exists, belongs to the given username, and is valid.
     """
-    if not api_key:
+    if not api_key or not username:
         return False
         
-    target_url = f"{SUPABASE_URL}/rest/v1/api_keys?api_key=eq.{api_key}&status=eq.paid&select=*"
+    # Updated query string to validate BOTH api_key and username match a paid record
+    target_url = f"{SUPABASE_URL}/rest/v1/api_keys?api_key=eq.{api_key}&username=eq.{urllib.parse.quote(username)}&status=eq.paid&select=*"
     
     try:
         req = urllib.request.Request(
@@ -104,10 +103,6 @@ def keep_alive_health_check():
 
 @app.route('/api/reg_auth', methods=['POST'])
 def generate_auth_key():
-    """
-    Accepts username and status, generates a unique 10-digit 
-    alphanumeric API key, and commits it to the database matrix.
-    """
     data = request.get_json() or {}
     username = data.get('username', '').strip()
     status = data.get('status', 'paid').strip()
@@ -115,11 +110,9 @@ def generate_auth_key():
     if not username:
         return jsonify({"status": "ERROR", "message": "Missing required parameter: 'username'"}), 400
 
-    # Generate a random 10-digit alphanumeric key
     chars = string.ascii_letters + string.digits
     api_key = ''.join(random.choice(chars) for _ in range(10))
 
-    # Commit metadata footprint down to Supabase storage structures
     db_success = save_api_key_to_supabase(username, api_key, status)
     
     if not db_success:
@@ -136,13 +129,20 @@ def generate_auth_key():
 @app.route('/api/register', methods=['POST'])
 def start_background_registration():
     """
-    Fire-and-forget HTTP endpoint. Spawns browser loop immediately.
-    Enforces API key confirmation via headers before granting entry.
+    Fire-and-forget HTTP endpoint. Verifies API key context and username 
+    against Supabase database schemas before spawning background automation pipeline loops.
     """
-    # Enforce API Key Authentication verification gateway
+    data = request.get_json() or {}
+    
+    # Extract the authenticating username from the payload payload request
+    auth_username = data.get('username', '').strip()
+    if not auth_username:
+        return jsonify({"status": "ERROR", "message": "Missing required authentication validator field: 'username'"}), 400
+
+    # Enforce API Key Authentication verification gateway matching BOTH token and username
     client_api_key = request.headers.get('X-API-Key')
-    if not client_api_key or not verify_api_key_in_supabase(client_api_key):
-        return jsonify({"status": "UNAUTHORIZED", "message": "Invalid, expired, or missing X-API-Key token context."}), 401
+    if not client_api_key or not verify_api_key_in_supabase(client_api_key, auth_username):
+        return jsonify({"status": "UNAUTHORIZED", "message": "Invalid, expired, or mismatched username and X-API-Key token combination."}), 401
 
     browser.ensure_background_loop_is_alive()
     bg_loop = browser.get_loop()
@@ -150,8 +150,6 @@ def start_background_registration():
     if not bg_loop or not bg_loop.is_running():
         return jsonify({"status": "ERROR", "message": "Background automation engine loop offline."}), 500
 
-    data = request.get_json() or {}
-    
     custom_domain = data.get('domain', '').strip()
     first_name = data.get('first_name', 'ben').strip()
     last_name = data.get('last_name', 'dover').strip()
@@ -184,9 +182,10 @@ def start_background_registration():
 
     log_queue = asyncio.Queue()
 
+    # Pass the clean authorized username safely through to the integrated browser engine
     asyncio.run_coroutine_threadsafe(
         browser.stream_integrated_workflow(
-            log_queue, custom_domain, first_name, last_name, 
+            log_queue, auth_username, custom_domain, first_name, last_name, 
             custom_email, custom_phone, custom_password, payment_method
         ),
         bg_loop
