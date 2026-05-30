@@ -166,9 +166,12 @@ async def run_homepage_pipeline(log_queue, page, domain_name):
     log_queue.put_nowait("[SUCCESS] Redirect completed! Sitting on checkout page.")
 
 @retry_async_action(retries=3, delay=5)
-async def step_1_add_to_cart(log_queue, page, sld_prefix):
-    button_selector = f'[id^="transfer-button-{sld_prefix}"]'
-    log_queue.put_nowait(f"[*] [STEP 1/4] Targeting main row button for: {sld_prefix}")
+async def step_1_add_to_cart(log_queue, page, domain_name):
+    # Extracts the string before the first dot to build the dynamic element selector ID
+    prefix = domain_name.split('.')[0]
+    button_selector = f'[id^="transfer-button-{prefix}"]'
+    log_queue.put_nowait(f"[*] [STEP 1/4] Targeting main row button for prefix: {prefix} (Domain: {domain_name})")
+    
     button_locator = page.locator(button_selector).first
     await button_locator.wait_for(state="visible", timeout=10000)
     await button_locator.scroll_into_view_if_needed()
@@ -290,14 +293,15 @@ async def trigger_mpesa_express_stk_push(log_queue, page):
 
 # --- INTEGRATED STREAM COORDINATORS ---
 
-async def stream_integrated_workflow(log_queue, auth_username, custom_sld, first_name, last_name, custom_email, custom_phone, custom_password, payment_method):
+async def stream_integrated_workflow(log_queue, auth_username, custom_domain, first_name, last_name, custom_email, custom_phone, custom_password, payment_method):
     global GLOBAL_BROWSER
     if not GLOBAL_BROWSER:
         log_queue.put_nowait("ERROR: Global browser instance is not initialized.")
         log_queue.put_nowait("DONE")
         return
 
-    domain_name = f"{custom_sld}.co.ke"
+    # Use exact string from request (preserves typed subdomains, .ke, .com, etc.)
+    domain_name = custom_domain.strip().lower()
     loop = asyncio.get_event_loop()
 
     # =========================================================================
@@ -333,7 +337,7 @@ async def stream_integrated_workflow(log_queue, auth_username, custom_sld, first
 
     try:
         await run_homepage_pipeline(log_queue, page, domain_name)
-        await step_1_add_to_cart(log_queue, page, custom_sld)
+        await step_1_add_to_cart(log_queue, page, domain_name)
         await asyncio.sleep(1.5)
         
         await step_2_remove_addon(log_queue, page)
@@ -409,7 +413,6 @@ async def stream_integrated_workflow(log_queue, auth_username, custom_sld, first
 
     except Exception as workflow_error:
         log_queue.put_nowait(f"[CRITICAL FAILURE] Integrated pipeline collapsed: {workflow_error}")
-        # Optional: update state to FAILED if db_record_id is active
         if db_record_id:
             try:
                 failure_payload = {"status": "FAILED", "invoice_url": f"Automation Failed: {workflow_error}"}
@@ -421,16 +424,27 @@ async def stream_integrated_workflow(log_queue, auth_username, custom_sld, first
         log_queue.put_nowait("DONE")
 
 
-async def stream_domain_check_workflow(log_queue, custom_sld):
+async def stream_domain_check_workflow(log_queue, custom_domain):
     global GLOBAL_BROWSER
     if not GLOBAL_BROWSER:
         log_queue.put_nowait("ERROR: Global browser instance is not initialized.")
         log_queue.put_nowait("DONE")
         return
 
-    domain_clean = re.sub(r'\.[a-zA-Z.]+$', '', custom_sld)
-    full_target_domain = f"{domain_clean}.co.ke"
-    direct_cart_url = f"https://my.hostafrica.com/cart.php?a=add&domain=register&sld={domain_clean}&tld=.co.ke&currency=3"
+    # Clean the input domain and separate sld and tld parameters safely
+    full_target_domain = custom_domain.strip().lower()
+    
+    # Matches common domain configurations to extract sld and tld
+    domain_match = re.match(r'^([^.]+)(?:\.(co\.ke|ke|com|net|org|xyz|biz))$', full_target_domain)
+    if domain_match:
+        sld_param = domain_match.group(1)
+        tld_param = f".{domain_match.group(2)}"
+    else:
+        # Graceful fallback if non-standard or highly nested subdomains are checked
+        sld_param = full_target_domain.split('.')[0]
+        tld_param = "." + ".".join(full_target_domain.split('.')[1:])
+
+    direct_cart_url = f"https://my.hostafrica.com/cart.php?a=add&domain=register&sld={sld_param}&tld={tld_param}&currency=3"
 
     log_queue.put_nowait(f"[*] Initializing isolation context for scan task: {full_target_domain}")
     context = await GLOBAL_BROWSER.new_context(
@@ -471,7 +485,7 @@ async def stream_domain_check_workflow(log_queue, custom_sld):
             if not domain_name_tag:
                 continue
                 
-            found_domain = domain_name_tag.text.strip()
+            found_domain = domain_name_tag.text.strip().lower()
             price_span = row.find("span", class_="text-nowrap")
             if price_span and price_span.find("strong"):
                 price = price_span.find("strong").text.strip()
@@ -484,7 +498,7 @@ async def stream_domain_check_workflow(log_queue, custom_sld):
             else:
                 status = "AVAILABLE"
 
-            if found_domain.lower() == full_target_domain.lower() and is_target_handled:
+            if found_domain == full_target_domain and is_target_handled:
                 continue
 
             results_matrix.append({
