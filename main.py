@@ -176,7 +176,7 @@ def start_background_registration():
     with tasks_lock:
         ACTIVE_TASKS[task_id] = {
             "status": "PROCESSING",
-            "domain": f"{custom_domain}.co.ke",
+            "domain": custom_domain,
             "started_at": int(time.time()),
             "error": None
         }
@@ -223,7 +223,7 @@ def start_background_registration():
         "status": "ACCEPTED",
         "message": "Automation pipeline spawned successfully in background loop worker thread.",
         "task_id": task_id,
-        "expected_database_domain": f"{custom_domain}.co.ke"
+        "expected_database_domain": custom_domain
     }), 202
 
 
