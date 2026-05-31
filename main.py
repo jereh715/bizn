@@ -14,6 +14,10 @@ from flask_cors import CORS  # Handles cross-origin resource sharing
 # Import the third-party WHOIS library
 import whois
 
+# Import beautifulsoup and requests for live pricing matrix injection
+import requests
+from bs4 import BeautifulSoup
+
 # Import your monolithic background driver
 import browser
 
@@ -26,9 +30,72 @@ CORS(app, resources={r"/api/*": {"origins": "*"}}, allow_headers=["Content-Type"
 ACTIVE_TASKS = {}
 tasks_lock = Lock()
 
+# --- DOMAIN PRICING MATRIX CACHE ---
+DOMAIN_PRICING_CACHE = {}
+pricing_lock = Lock()
+
 # Supabase Configurations for API Key checks
 SUPABASE_URL = "https://zeccnkbazpqjztjrifsx.supabase.co"
 SERVICE_ROLE_KEY = "sb_secret_xtVXHEqfMyEkeuSoob8sKw_awiu8BEH"
+
+
+def fetch_and_cache_domain_prices():
+    """
+    Scrapes hostafrica.ke on startup to populate local pricing structures.
+    Guarantees lookups stay dynamic without hardcoding data footprints.
+    """
+    global DOMAIN_PRICING_CACHE
+    url = "https://www.hostafrica.ke/domains/domain-prices/"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        pricing_rows = soup.find_all('div', class_='domainpricingtablerow')
+        
+        temp_cache = {}
+        for row in pricing_rows:
+            columns = row.find_all('div', recursive=False)
+            if len(columns) >= 5:
+                tld = columns[0].text.strip().lower() # Keep lowercase for seamless matching
+                category = columns[1].text.strip()
+                
+                reg_col = columns[2]
+                if reg_col.span:
+                    reg_col.span.decompose()
+                register_price = reg_col.text.strip()
+                
+                renewal_col = columns[4]
+                if renewal_col.span:
+                    renewal_col.span.decompose()
+                renewal_price = renewal_col.text.strip()
+                
+                temp_cache[tld] = {
+                    "category": category,
+                    "registration_price": register_price,
+                    "renewal_price": renewal_price
+                }
+                
+        with pricing_lock:
+            DOMAIN_PRICING_CACHE = temp_cache
+        print(f"[PRICING] Successfully cached {len(temp_cache)} domain pricing tiers.")
+    except Exception as e:
+        print(f"[PRICING ERROR] Failed to dynamically compile pricing cache matrix: {e}")
+
+
+def match_pricing_for_domain(domain_name):
+    """
+    Helper function to parse domain names and match them with our cached TLD price footprints.
+    """
+    domain_clean = domain_name.strip().lower()
+    with pricing_lock:
+        # Check matching components from longest extension variant down to standard extensions (.co.ke down to .ke)
+        for tld, metrics in sorted(DOMAIN_PRICING_CACHE.items(), key=lambda x: len(x[0]), reverse=True):
+            if domain_clean.endswith(tld):
+                return metrics
+    return {"category": "Unknown", "registration_price": "N/A", "renewal_price": "N/A"}
 
 
 def verify_api_key_in_supabase(api_key, username):
@@ -211,12 +278,18 @@ def start_background_registration():
         parts = custom_email.split('@')
         custom_email = f"{parts[0]}+{int(time.time()) % 1000000:06d}@{parts[1]}"
 
+    # Fetch corresponding domain pricing tier details
+    price_metrics = match_pricing_for_domain(custom_domain)
+
     task_id = str(uuid.uuid4())
     
     with tasks_lock:
         ACTIVE_TASKS[task_id] = {
             "status": "PROCESSING",
             "domain": custom_domain,
+            "category": price_metrics["category"],
+            "registration_price": price_metrics["registration_price"],
+            "renewal_price": price_metrics["renewal_price"],
             "started_at": int(time.time()),
             "error": None
         }
@@ -263,7 +336,8 @@ def start_background_registration():
         "status": "ACCEPTED",
         "message": "Automation pipeline spawned successfully in background loop worker thread.",
         "task_id": task_id,
-        "expected_database_domain": custom_domain
+        "expected_database_domain": custom_domain,
+        "pricing": price_metrics
     }), 202
 
 
@@ -282,7 +356,6 @@ def lookup_domain_record():
     Secure endpoint to fetch structural transaction updates directly from the 
     Supabase domain_records matrix layout. Requires username, domain, and a matching valid API key.
     """
-    # Extract query parameters from URL strings
     username = request.args.get('username', '').strip()
     domain = request.args.get('domain', '').strip()
     client_api_key = request.headers.get('X-API-Key')
@@ -290,11 +363,9 @@ def lookup_domain_record():
     if not username or not domain:
         return jsonify({"status": "ERROR", "message": "Missing required query string fields: 'username' and 'domain'"}), 400
 
-    # Gatekeep query using validation routine matching API Token + Username against Supabase mappings
     if not client_api_key or not verify_api_key_in_supabase(client_api_key, username):
         return jsonify({"status": "UNAUTHORIZED", "message": "Invalid, missing, or mismatched authentication context credentials."}), 401
 
-    # Query target domain record rows allocated specifically to this username scope
     target_url = f"{SUPABASE_URL}/rest/v1/domain_records?username=eq.{urllib.parse.quote(username)}&domain=eq.{urllib.parse.quote(domain)}&select=*"
 
     try:
@@ -328,6 +399,7 @@ def check_domain_availability_endpoint():
     """
     Synchronous WHOIS query container wrapped inside async executors 
     to verify domain state layout footprint across external registration spaces.
+    Adds parsed HostAfrica price attributes directly onto output response payloads.
     """
     data = request.get_json() or {}
     domain = data.get('domain', '').strip()
@@ -342,18 +414,20 @@ def check_domain_availability_endpoint():
         return jsonify({"status": "ERROR", "message": "Background worker engine offline."}), 500
 
     try:
-        # Define an actual coroutine wrapper to execute thread-safe downstream functions safely
         async def async_wrapper():
             return await bg_loop.run_in_executor(None, perform_whois_lookup, domain)
 
-        # Dispatch the coroutine wrapper to our running event loop instance safely
         future = asyncio.run_coroutine_threadsafe(async_wrapper(), bg_loop)
-        
-        # Block Flask thread momentarily until execution response criteria fills
         result = future.result(timeout=15)
         
         if result.get("status") == "ERROR":
             return jsonify({"status": "ERROR", "message": f"Could not verify domain: {result.get('message')}"}), 500
+            
+        # Append relevant registration and renewal matrix configurations directly to payload response
+        price_metrics = match_pricing_for_domain(domain)
+        result["category"] = price_metrics["category"]
+        result["registration_price"] = price_metrics["registration_price"]
+        result["renewal_price"] = price_metrics["renewal_price"]
             
         return jsonify(result), 200
 
@@ -364,6 +438,10 @@ def check_domain_availability_endpoint():
 
 if __name__ == "__main__":
     browser.ensure_background_loop_is_alive()
+    
+    # Run the live BeautifulSoup pricing parser on launch
+    fetch_and_cache_domain_prices()
+    
     port = int(os.environ.get("PORT", 5000))
     print(f"[*] Launching Background HTTP Execution Gateway on port {port} ...")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
