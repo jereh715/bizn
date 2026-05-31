@@ -315,7 +315,8 @@ def lookup_domain_record():
     """
     Secure endpoint to fetch structural transaction updates directly from the 
     Supabase domain_records matrix layout. Requires username, domain, and a matching valid API key.
-    Calculates dynamic compound objects and live countdown timers on-the-fly.
+    Calculates dynamic countdown timers, formats login credentials, and bundles hardcoded M-Pesa 
+    Paybill details along with invoice metrics on-the-fly.
     """
     username = request.args.get('username', '').strip()
     domain = request.args.get('domain', '').strip()
@@ -349,14 +350,12 @@ def lookup_domain_record():
             
             for item in records:
                 # 1. Parse created_at timestamp securely to handle ISO formatting variants
-                # Stripe out potential 'Z' suffix and split at timezone offset if present
                 raw_created = item.get("created_at", "")
                 try:
                     clean_created = raw_created.replace("Z", "").split("+")[0]
                     dt_created = datetime.fromisoformat(clean_created).replace(tzinfo=timezone.utc)
                     created_ts = int(dt_created.timestamp())
                 except Exception:
-                    # Fallback structural calculation strategy using item's primary integer timestamp
                     created_ts = item.get("timestamp", now_ts)
                 
                 # 2. Calculate Domain Availability Time Horizon (exactly 3 minutes after creation)
@@ -365,21 +364,24 @@ def lookup_domain_record():
                 if time_remaining < 0:
                     time_remaining = 0
                 
-                # 3. Assemble composite objects and clean up standalone parameters
-                email = item.pop("email", None)
-                password = item.pop("password", None)
+                # 3. Compile the response structure mapping out requested objects
+                invoice_id = item.get("invoice_id")
+                registration_price = item.get("registration_price")
                 
                 computed_item = {
                     "id": item.get("id"),
                     "domain": item.get("domain"),
-                    "invoice_id": item.get("invoice_id"),
+                    "invoice_id": invoice_id,
                     "invoice_url": item.get("invoice_url"),
                     "login_credentials": {
-                        "email": email,
-                        "password": password
+                        "email": item.get("email"),
+                        "password": item.get("password")
                     },
-                    "registration_price": item.get("registration_price"),
-                    "renewal_price": item.get("renewal_price"),
+                    "payment_details": {
+                        "paybill_number": "890500",
+                        "account_number": invoice_id,
+                        "amount_payable": registration_price
+                    },
                     "category": item.get("category"),
                     "payment_method": item.get("payment_method"),
                     "status": item.get("status"),
@@ -387,7 +389,8 @@ def lookup_domain_record():
                     "time_created": raw_created,
                     "timestamp": item.get("timestamp"),
                     "domain_available_in": datetime.fromtimestamp(available_in_ts, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
-                    "time_remaining_seconds": time_remaining
+                    "time_remaining_seconds": time_remaining,
+                    "renewal_price": item.get("renewal_price") # Put outside as the last field
                 }
                 processed_records.append(computed_item)
 
