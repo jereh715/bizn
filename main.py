@@ -7,6 +7,7 @@ import string
 import json
 import urllib.request
 import urllib.parse
+from datetime import datetime, timezone
 from threading import Lock
 from flask import Flask, request, jsonify
 from flask_cors import CORS  # Handles cross-origin resource sharing
@@ -314,6 +315,7 @@ def lookup_domain_record():
     """
     Secure endpoint to fetch structural transaction updates directly from the 
     Supabase domain_records matrix layout. Requires username, domain, and a matching valid API key.
+    Calculates dynamic compound objects and live countdown timers on-the-fly.
     """
     username = request.args.get('username', '').strip()
     domain = request.args.get('domain', '').strip()
@@ -342,10 +344,57 @@ def lookup_domain_record():
             if not records:
                 return jsonify({"status": "NOT_FOUND", "message": f"No active data row footprints registered for domain '{domain}' under user context."}), 404
                 
+            processed_records = []
+            now_ts = int(time.time())
+            
+            for item in records:
+                # 1. Parse created_at timestamp securely to handle ISO formatting variants
+                # Stripe out potential 'Z' suffix and split at timezone offset if present
+                raw_created = item.get("created_at", "")
+                try:
+                    clean_created = raw_created.replace("Z", "").split("+")[0]
+                    dt_created = datetime.fromisoformat(clean_created).replace(tzinfo=timezone.utc)
+                    created_ts = int(dt_created.timestamp())
+                except Exception:
+                    # Fallback structural calculation strategy using item's primary integer timestamp
+                    created_ts = item.get("timestamp", now_ts)
+                
+                # 2. Calculate Domain Availability Time Horizon (exactly 3 minutes after creation)
+                available_in_ts = created_ts + 180
+                time_remaining = available_in_ts - now_ts
+                if time_remaining < 0:
+                    time_remaining = 0
+                
+                # 3. Assemble composite objects and clean up standalone parameters
+                email = item.pop("email", None)
+                password = item.pop("password", None)
+                
+                computed_item = {
+                    "id": item.get("id"),
+                    "domain": item.get("domain"),
+                    "invoice_id": item.get("invoice_id"),
+                    "invoice_url": item.get("invoice_url"),
+                    "login_credentials": {
+                        "email": email,
+                        "password": password
+                    },
+                    "registration_price": item.get("registration_price"),
+                    "renewal_price": item.get("renewal_price"),
+                    "category": item.get("category"),
+                    "payment_method": item.get("payment_method"),
+                    "status": item.get("status"),
+                    "username": item.get("username"),
+                    "time_created": raw_created,
+                    "timestamp": item.get("timestamp"),
+                    "domain_available_in": datetime.fromtimestamp(available_in_ts, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "time_remaining_seconds": time_remaining
+                }
+                processed_records.append(computed_item)
+
             return jsonify({
                 "status": "SUCCESS",
-                "count": len(records),
-                "data": records
+                "count": len(processed_records),
+                "data": processed_records
             }), 200
 
     except Exception as e:
