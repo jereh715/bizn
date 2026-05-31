@@ -16,23 +16,38 @@ GLOBAL_BROWSER = None
 LOOP = None
 HOMEPAGE_URL = "https://www.hostafrica.ke/"
 
+# --- HARDCODED DOMAIN PRICING MATRIX ---
+LOCAL_FALLBACK = {
+    ".co.ke": {"category": "Africa", "registration_price": "KSh463", "renewal_price": "KSh2,350"},
+    ".ke": {"category": "Africa", "registration_price": "KSh3,000", "renewal_price": "KSh3,000"},
+    ".ac.ke": {"category": "Africa", "registration_price": "KSh1,450", "renewal_price": "KSh2,350"},
+    ".sc.ke": {"category": "Africa", "registration_price": "KSh1,450", "renewal_price": "KSh2,350"},
+    ".me.ke": {"category": "Africa", "registration_price": "KSh1,450", "renewal_price": "KSh2,350"},
+    ".info.ke": {"category": "Africa", "registration_price": "KSh1,450", "renewal_price": "KSh2,350"},
+    ".com": {"category": "Technology", "registration_price": "KSh2,120", "renewal_price": "KSh2,990"},
+    ".org": {"category": "Technology", "registration_price": "KSh2,500", "renewal_price": "KSh2,990"},
+    ".net": {"category": "Technology", "registration_price": "KSh2,600", "renewal_price": "KSh2,990"},
+    ".africa": {"category": "Africa", "registration_price": "KSh1,059", "renewal_price": "KSh2,299"}
+}
+
 
 def get_cached_prices_for_domain(domain_name):
     """
-    Safely accesses the live DOMAIN_PRICING_CACHE handled by main.py
-    and extracts pricing info for the specific domain's extension.
+    Parses domain names and matches them against the local hardcoded TLD matrix.
+    Sorts keys by length descending to avoid greedy partial matches (e.g. matching .co.ke before .ke).
     """
     try:
-        from main import DOMAIN_PRICING_CACHE, pricing_lock
         domain_clean = domain_name.strip().lower()
-        with pricing_lock:
-            # Sort extensions by length descending to match '.co.ke' before '.ke'
-            for tld, metrics in sorted(DOMAIN_PRICING_CACHE.items(), key=lambda x: len(x[0]), reverse=True):
-                if domain_clean.endswith(tld):
-                    return metrics
+        
+        # Sort extensions by string length descending (.co.ke matches before checking .ke)
+        sorted_fallback = sorted(LOCAL_FALLBACK.items(), key=lambda x: len(x[0]), reverse=True)
+        
+        for tld, metrics in sorted_fallback:
+            if domain_clean.endswith(tld):
+                return metrics
     except Exception as e:
-        print(f"[BROWSER PRICING ERROR] Could not read cache matrix from main: {e}")
-    
+        print(f"[BROWSER PRICING ERROR] Failed executing local pricing lookup: {e}")
+        
     return {"category": "Unknown", "registration_price": "N/A", "renewal_price": "N/A"}
 
 
@@ -360,7 +375,7 @@ async def stream_integrated_workflow(log_queue, auth_username, custom_domain, fi
     domain_name = custom_domain.strip().lower()
     loop = asyncio.get_event_loop()
 
-    # Dynamic pricing injection from main caching framework
+    # Dynamic pricing injection from local caching framework
     price_metrics = get_cached_prices_for_domain(domain_name)
 
     # =========================================================================
@@ -534,7 +549,7 @@ async def stream_domain_check_workflow(log_queue, custom_domain):
         results_matrix = []
         is_target_handled = False
 
-        # Access cached domain values directly for fallback/injection context match
+        # Access local hardcoded values directly for fallback/injection context match
         live_prices = get_cached_prices_for_domain(full_target_domain)
 
         internal_msg = soup.find("div", class_="v-messages__message")
