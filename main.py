@@ -252,7 +252,7 @@ def start_background_registration():
             except Exception as e:
                 with tasks_lock:
                     if tid in ACTIVE_TASKS:
-                        Bronze_TASKS[tid]["status"] = "FAILED"
+                        ACTIVE_TASKS[tid]["status"] = "FAILED"
                         ACTIVE_TASKS[tid]["error"] = f"Monitor internal failure: {str(e)}"
         
         asyncio.run_coroutine_threadsafe(_read_queue_stream(), bg_loop)
@@ -342,11 +342,13 @@ def check_domain_availability_endpoint():
         return jsonify({"status": "ERROR", "message": "Background worker engine offline."}), 500
 
     try:
-        # Offload the blocking WHOIS lookup library logic cleanly over to the background thread pool execution framework
-        future = asyncio.run_coroutine_threadsafe(
-            bg_loop.run_in_executor(None, perform_whois_lookup, domain),
-            bg_loop
-        )
+        # Define an actual coroutine wrapper to execute thread-safe downstream functions safely
+        async def async_wrapper():
+            return await bg_loop.run_in_executor(None, perform_whois_lookup, domain)
+
+        # Dispatch the coroutine wrapper to our running event loop instance safely
+        future = asyncio.run_coroutine_threadsafe(async_wrapper(), bg_loop)
+        
         # Block Flask thread momentarily until execution response criteria fills
         result = future.result(timeout=15)
         
