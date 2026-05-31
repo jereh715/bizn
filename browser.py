@@ -79,17 +79,45 @@ def sync_domain_record_to_web(payload, record_id=None):
         return None if method == 'POST' else False
 
 
-# --- RUNTIME LOOPS MANAGEMENT ---
+# --- RUNTIME LOOPS MANAGEMENT (GUNICORN / MULTI-THREAD SAFE) ---
 
 def start_global_loop():
     global LOOP
-    LOOP = asyncio.new_event_loop()
-    asyncio.set_event_loop(LOOP)
-    LOOP.run_until_complete(init_global_browser())
-    LOOP.run_forever()
+    try:
+        # Check if an event loop is already assigned and running in this execution context
+        LOOP = asyncio.get_running_loop()
+        print("[*] Hooked into an existing running event loop context.")
+    except RuntimeError:
+        # No loop is running in this thread context yet; safe to handle or attach
+        if LOOP is None:
+            try:
+                LOOP = asyncio.get_event_loop()
+            except RuntimeError:
+                LOOP = asyncio.new_event_loop()
+                asyncio.set_event_loop(LOOP)
+    
+    # Run initialization sequences safely inside the configured loop
+    if not LOOP.is_running():
+        LOOP.run_until_complete(init_global_browser())
+        try:
+            LOOP.run_forever()
+        except RuntimeError as e:
+            if "already running" in str(e):
+                print("[*] Defensive Guard: Event loop is already running safely downstream.")
+            else:
+                raise e
+    else:
+        # If the loop was already running, schedule the browser initialization coroutine dynamically
+        print("[*] Event loop active. Scheduling global browser initialization...")
+        asyncio.run_coroutine_threadsafe(init_global_browser(), LOOP)
 
 async def init_global_browser():
     global GLOBAL_P, GLOBAL_BROWSER
+    # Prevent re-initializing if a concurrent thread already built the browser instance
+    if GLOBAL_BROWSER:
+        print("[*] Global browser instance already alive. Skipping redundant init pass.")
+        return
+
     print("[*] Initializing Global Browser Instance (Headless Mode: ON)...")
     GLOBAL_P = await async_playwright().start()
     
@@ -107,19 +135,28 @@ async def init_global_browser():
 
 def ensure_background_loop_is_alive():
     global LOOP
+    # Check both initialization status and actively running flags defensively
     if LOOP is None or not LOOP.is_running():
-        print("[!] Background event loop detected as OFFLINE. Spawning new initialization thread...")
+        print("[!] Background event loop detected as OFFLINE. Spawning safe initialization thread...")
         t = threading.Thread(target=start_global_loop, daemon=True)
         t.start()
         
+        # Give the background loop up to 3 seconds to spin up completely
         for _ in range(3):
             if LOOP and LOOP.is_running():
                 print("[SUCCESS] Background event loop successfully recovered and is now ONLINE.")
                 break
             time.sleep(1)
+    else:
+        # Loop is healthy, ensure the browser target hasn't crashed or disappeared
+        if not GLOBAL_BROWSER:
+            print("[!] Loop is online but browser instance is missing. Hot-patching initialization...")
+            asyncio.run_coroutine_threadsafe(init_global_browser(), LOOP)
 
 def get_loop():
     global LOOP
+    if LOOP is None:
+        ensure_background_loop_is_alive()
     return LOOP
 
 def retry_async_action(retries=3, delay=5):
