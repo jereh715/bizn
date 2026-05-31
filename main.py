@@ -11,6 +11,9 @@ from threading import Lock
 from flask import Flask, request, jsonify
 from flask_cors import CORS  # Handles cross-origin resource sharing
 
+# Import the third-party WHOIS library
+import whois
+
 # Import your monolithic background driver
 import browser
 
@@ -85,6 +88,43 @@ def save_api_key_to_supabase(username, api_key, status):
     except Exception as e:
         print(f"[AUTH ERROR] Failed to commit new API key to Supabase: {e}")
         return False
+
+
+# --- WHOIS SYNCHRONOUS HELPER FUNCTION ---
+def perform_whois_lookup(domain_name):
+    """
+    Executes the synchronous WHOIS library logic and returns a structured dictionary.
+    """
+    try:
+        domain_info = whois.whois(domain_name)
+        if domain_info.registrar or domain_info.creation_date:
+            return {
+                "available": False,
+                "status": "TAKEN",
+                "registrar": domain_info.registrar,
+                "domain": domain_name
+            }
+        else:
+            return {
+                "available": True,
+                "status": "AVAILABLE",
+                "registrar": None,
+                "domain": domain_name
+            }
+    except whois.parser.PywhoisError:
+        return {
+            "available": True,
+            "status": "AVAILABLE",
+            "registrar": None,
+            "domain": domain_name
+        }
+    except Exception as e:
+        return {
+            "available": False,
+            "status": "ERROR",
+            "message": str(e),
+            "domain": domain_name
+        }
 
 
 @app.route('/')
@@ -212,7 +252,7 @@ def start_background_registration():
             except Exception as e:
                 with tasks_lock:
                     if tid in ACTIVE_TASKS:
-                        ACTIVE_TASKS[tid]["status"] = "FAILED"
+                        Bronze_TASKS[tid]["status"] = "FAILED"
                         ACTIVE_TASKS[tid]["error"] = f"Monitor internal failure: {str(e)}"
         
         asyncio.run_coroutine_threadsafe(_read_queue_stream(), bg_loop)
@@ -281,6 +321,43 @@ def lookup_domain_record():
     except Exception as e:
         print(f"[LOOKUP ERROR] Direct backend database mapping access failed: {e}")
         return jsonify({"status": "ERROR", "message": f"Supabase sync target dropped: {str(e)}"}), 500
+
+
+@app.route('/api/check_available', methods=['POST'])
+def check_domain_availability_endpoint():
+    """
+    Synchronous WHOIS query container wrapped inside async executors 
+    to verify domain state layout footprint across external registration spaces.
+    """
+    data = request.get_json() or {}
+    domain = data.get('domain', '').strip()
+
+    if not domain:
+        return jsonify({"status": "ERROR", "message": "Missing required parameter: 'domain'"}), 400
+
+    browser.ensure_background_loop_is_alive()
+    bg_loop = browser.get_loop()
+
+    if not bg_loop or not bg_loop.is_running():
+        return jsonify({"status": "ERROR", "message": "Background worker engine offline."}), 500
+
+    try:
+        # Offload the blocking WHOIS lookup library logic cleanly over to the background thread pool execution framework
+        future = asyncio.run_coroutine_threadsafe(
+            bg_loop.run_in_executor(None, perform_whois_lookup, domain),
+            bg_loop
+        )
+        # Block Flask thread momentarily until execution response criteria fills
+        result = future.result(timeout=15)
+        
+        if result.get("status") == "ERROR":
+            return jsonify({"status": "ERROR", "message": f"Could not verify domain: {result.get('message')}"}), 500
+            
+        return jsonify(result), 200
+
+    except Exception as e:
+        print(f"[WHOIS ERROR] External network context pipeline timing failed: {e}")
+        return jsonify({"status": "ERROR", "message": f"WHOIS operational cycle timed out or failed: {str(e)}"}), 500
 
 
 if __name__ == "__main__":
