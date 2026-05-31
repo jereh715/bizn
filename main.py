@@ -59,7 +59,8 @@ def fetch_and_cache_domain_prices():
         for row in pricing_rows:
             columns = row.find_all('div', recursive=False)
             if len(columns) >= 5:
-                tld = columns[0].text.strip().lower() # Keep lowercase for seamless matching
+                # CRITICAL FIX: Aggressively strip spaces, tabs, and newlines from the scraped TLD text
+                tld = columns[0].text.strip().lower().replace(" ", "").replace("\n", "").replace("\r", "")
                 category = columns[1].text.strip()
                 
                 reg_col = columns[2]
@@ -72,11 +73,12 @@ def fetch_and_cache_domain_prices():
                     renewal_col.span.decompose()
                 renewal_price = renewal_col.text.strip()
                 
-                temp_cache[tld] = {
-                    "category": category,
-                    "registration_price": register_price,
-                    "renewal_price": renewal_price
-                }
+                if tld:  # Protect against caching empty text blocks
+                    temp_cache[tld] = {
+                        "category": category,
+                        "registration_price": register_price,
+                        "renewal_price": renewal_price
+                    }
                 
         with pricing_lock:
             DOMAIN_PRICING_CACHE = temp_cache
@@ -90,11 +92,19 @@ def match_pricing_for_domain(domain_name):
     Helper function to parse domain names and match them with our cached TLD price footprints.
     """
     domain_clean = domain_name.strip().lower()
+    
     with pricing_lock:
-        # Check matching components from longest extension variant down to standard extensions (.co.ke down to .ke)
-        for tld, metrics in sorted(DOMAIN_PRICING_CACHE.items(), key=lambda x: len(x[0]), reverse=True):
+        if not DOMAIN_PRICING_CACHE:
+            return {"category": "Unknown", "registration_price": "N/A", "renewal_price": "N/A"}
+
+        # Sort extensions by string length descending to match '.co.ke' accurately before hitting '.ke' fallback
+        sorted_tlds = sorted(DOMAIN_PRICING_CACHE.items(), key=lambda x: len(x[0]), reverse=True)
+        
+        for tld, metrics in sorted_tlds:
+            # Enforce check compatibility for both absolute endings and dotted extensions
             if domain_clean.endswith(tld):
                 return metrics
+                
     return {"category": "Unknown", "registration_price": "N/A", "renewal_price": "N/A"}
 
 
@@ -106,7 +116,6 @@ def verify_api_key_in_supabase(api_key, username):
     if not api_key or not username:
         return False
         
-    # Updated query string to validate BOTH api_key and username match a paid record
     target_url = f"{SUPABASE_URL}/rest/v1/api_keys?api_key=eq.{api_key}&username=eq.{urllib.parse.quote(username)}&status=eq.paid&select=*"
     
     try:
@@ -242,12 +251,10 @@ def start_background_registration():
     """
     data = request.get_json() or {}
     
-    # Extract the authenticating username from the payload payload request
     auth_username = data.get('username', '').strip()
     if not auth_username:
         return jsonify({"status": "ERROR", "message": "Missing required authentication validator field: 'username'"}), 400
 
-    # Enforce API Key Authentication verification gateway matching BOTH token and username
     client_api_key = request.headers.get('X-API-Key')
     if not client_api_key or not verify_api_key_in_supabase(client_api_key, auth_username):
         return jsonify({"status": "UNAUTHORIZED", "message": "Invalid, expired, or mismatched username and X-API-Key token combination."}), 401
@@ -278,7 +285,6 @@ def start_background_registration():
         parts = custom_email.split('@')
         custom_email = f"{parts[0]}+{int(time.time()) % 1000000:06d}@{parts[1]}"
 
-    # Fetch corresponding domain pricing tier details
     price_metrics = match_pricing_for_domain(custom_domain)
 
     task_id = str(uuid.uuid4())
@@ -296,7 +302,6 @@ def start_background_registration():
 
     log_queue = asyncio.Queue()
 
-    # Pass the clean authorized username safely through to the integrated browser engine
     asyncio.run_coroutine_threadsafe(
         browser.stream_integrated_workflow(
             log_queue, auth_username, custom_domain, first_name, last_name, 
@@ -439,7 +444,7 @@ def check_domain_availability_endpoint():
 if __name__ == "__main__":
     browser.ensure_background_loop_is_alive()
     
-    # Run the live BeautifulSoup pricing parser on launch
+    # Run the live BeautifulSoup pricing parser on launch to pre-populate cache
     fetch_and_cache_domain_prices()
     
     port = int(os.environ.get("PORT", 5000))
