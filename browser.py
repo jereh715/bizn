@@ -17,6 +17,25 @@ LOOP = None
 HOMEPAGE_URL = "https://www.hostafrica.ke/"
 
 
+def get_cached_prices_for_domain(domain_name):
+    """
+    Safely accesses the live DOMAIN_PRICING_CACHE handled by main.py
+    and extracts pricing info for the specific domain's extension.
+    """
+    try:
+        from main import DOMAIN_PRICING_CACHE, pricing_lock
+        domain_clean = domain_name.strip().lower()
+        with pricing_lock:
+            # Sort extensions by length descending to match '.co.ke' before '.ke'
+            for tld, metrics in sorted(DOMAIN_PRICING_CACHE.items(), key=lambda x: len(x[0]), reverse=True):
+                if domain_clean.endswith(tld):
+                    return metrics
+    except Exception as e:
+        print(f"[BROWSER PRICING ERROR] Could not read cache matrix from main: {e}")
+    
+    return {"category": "Unknown", "registration_price": "N/A", "renewal_price": "N/A"}
+
+
 # --- SUPABASE REST STORAGE ADAPTER (TWO-PHASE SUPPORT) ---
 
 def sync_domain_record_to_web(payload, record_id=None):
@@ -341,6 +360,9 @@ async def stream_integrated_workflow(log_queue, auth_username, custom_domain, fi
     domain_name = custom_domain.strip().lower()
     loop = asyncio.get_event_loop()
 
+    # Dynamic pricing injection from main caching framework
+    price_metrics = get_cached_prices_for_domain(domain_name)
+
     # =========================================================================
     # PHASE 1: IMMEDIATE INITIAL SAVE (Fills baseline details, status=PENDING)
     # =========================================================================
@@ -353,7 +375,10 @@ async def stream_integrated_workflow(log_queue, auth_username, custom_domain, fi
         "timestamp": int(time.time()),
         "invoice_url": "Processing automation pipelines...",
         "invoice_id": "PENDING",
-        "payment_method": payment_method
+        "payment_method": payment_method,
+        "category": price_metrics["category"],
+        "registration_price": price_metrics["registration_price"],
+        "renewal_price": price_metrics["renewal_price"]
     }
     
     # Push to Supabase immediately and get back the unique generated row key
@@ -431,7 +456,10 @@ async def stream_integrated_workflow(log_queue, auth_username, custom_domain, fi
             "invoice_id": invoice_id,
             "payment_method": payment_method,
             "status": "SUCCESS",
-            "timestamp": int(time.time())
+            "timestamp": int(time.time()),
+            "category": price_metrics["category"],
+            "registration_price": price_metrics["registration_price"],
+            "renewal_price": price_metrics["renewal_price"]
         }
         log_queue.put_nowait(f"FINAL_RESULT:{json.dumps(final_payload)}")
 
@@ -506,13 +534,18 @@ async def stream_domain_check_workflow(log_queue, custom_domain):
         results_matrix = []
         is_target_handled = False
 
+        # Access cached domain values directly for fallback/injection context match
+        live_prices = get_cached_prices_for_domain(full_target_domain)
+
         internal_msg = soup.find("div", class_="v-messages__message")
         if internal_msg and "already registered with us" in internal_msg.text.lower():
             log_queue.put_nowait(f"[!] Alert: Target registered internally within HostAfrica node maps.")
             results_matrix.append({
                 "domain": full_target_domain,
                 "status": "NOT_AVAILABLE_HOSTAFRICA",
-                "price": "N/A"
+                "price": live_prices["registration_price"],
+                "renewal_price": live_prices["renewal_price"],
+                "category": live_prices["category"]
             })
             is_target_handled = True
 
@@ -523,11 +556,15 @@ async def stream_domain_check_workflow(log_queue, custom_domain):
                 continue
                 
             found_domain = domain_name_tag.text.strip().lower()
+            
+            # Fetch dynamic metrics for the row item
+            row_prices = get_cached_prices_for_domain(found_domain)
+            
             price_span = row.find("span", class_="text-nowrap")
             if price_span and price_span.find("strong"):
                 price = price_span.find("strong").text.strip()
             else:
-                price = "Pricing Undefined/NA"
+                price = row_prices["registration_price"]
                 
             taken_label = row.find("span", class_="domainEntryPanel--label--taken")
             if taken_label and "taken" in taken_label.text.lower():
@@ -541,7 +578,9 @@ async def stream_domain_check_workflow(log_queue, custom_domain):
             results_matrix.append({
                 "domain": found_domain,
                 "status": status,
-                "price": price
+                "price": price,
+                "renewal_price": row_prices["renewal_price"],
+                "category": row_prices["category"]
             })
 
         if not results_matrix:
