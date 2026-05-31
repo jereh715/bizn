@@ -34,12 +34,10 @@ LOCAL_FALLBACK = {
 def get_cached_prices_for_domain(domain_name):
     """
     Parses domain names and matches them against the local hardcoded TLD matrix.
-    Sorts keys by length descending to avoid greedy partial matches (e.g. matching .co.ke before .ke).
+    Sorts keys by length descending to avoid greedy partial matches.
     """
     try:
         domain_clean = domain_name.strip().lower()
-        
-        # Sort extensions by string length descending (.co.ke matches before checking .ke)
         sorted_fallback = sorted(LOCAL_FALLBACK.items(), key=lambda x: len(x[0]), reverse=True)
         
         for tld, metrics in sorted_fallback:
@@ -56,7 +54,7 @@ def get_cached_prices_for_domain(domain_name):
 def sync_domain_record_to_web(payload, record_id=None):
     """
     Handles both initial insertion (POST) and subsequent updates (PATCH).
-    If record_id is provided, it targets that specific row via its ID.
+    Accepts 204 status codes representing successful updates without message content payloads.
     """
     base_url = "https://zeccnkbazpqjztjrifsx.supabase.co/rest/v1/domain_records"
     service_role_key = "sb_secret_xtVXHEqfMyEkeuSoob8sKw_awiu8BEH"
@@ -81,7 +79,6 @@ def sync_domain_record_to_web(payload, record_id=None):
             'User-Agent': 'Render-Automation-Engine'
         }
         
-        # Request Supabase to return the inserted row data back to get its ID
         if method == 'POST':
             headers['Prefer'] = 'return=representation'
         else:
@@ -96,13 +93,16 @@ def sync_domain_record_to_web(payload, record_id=None):
         
         with urllib.request.urlopen(req, timeout=15) as response:
             status_code = response.getcode()
-            if status_code in (200, 201):
+            
+            # PostgREST routes 204 responses during standard successful row mutations (PATCH/PUT)
+            if status_code in (200, 201, 204):
                 if method == 'POST':
                     res_data = json.loads(response.read().decode('utf-8'))
                     if isinstance(res_data, list) and len(res_data) > 0:
                         print("[SUCCESS] Initial PENDING state saved to Supabase.")
-                        return res_data[0].get('id')  # Returns the DB row ID for subsequent patch
-                print("[SUCCESS] Supabase Database Synchronization Complete.")
+                        return res_data[0].get('id')  # Returns row primary key ID context
+                
+                print(f"[SUCCESS] Supabase Database Synchronization Complete (HTTP {status_code}).")
                 return True
             else:
                 print(f"[STORAGE ERROR] Supabase backend rejected payload with status code: {status_code}")
@@ -118,11 +118,9 @@ def sync_domain_record_to_web(payload, record_id=None):
 def start_global_loop():
     global LOOP
     try:
-        # Check if an event loop is already assigned and running in this execution context
         LOOP = asyncio.get_running_loop()
         print("[*] Hooked into an existing running event loop context.")
     except RuntimeError:
-        # No loop is running in this thread context yet; safe to handle or attach
         if LOOP is None:
             try:
                 LOOP = asyncio.get_event_loop()
@@ -130,7 +128,6 @@ def start_global_loop():
                 LOOP = asyncio.new_event_loop()
                 asyncio.set_event_loop(LOOP)
     
-    # Run initialization sequences safely inside the configured loop
     if not LOOP.is_running():
         LOOP.run_until_complete(init_global_browser())
         try:
@@ -141,13 +138,11 @@ def start_global_loop():
             else:
                 raise e
     else:
-        # If the loop was already running, schedule the browser initialization coroutine dynamically
         print("[*] Event loop active. Scheduling global browser initialization...")
         asyncio.run_coroutine_threadsafe(init_global_browser(), LOOP)
 
 async def init_global_browser():
     global GLOBAL_P, GLOBAL_BROWSER
-    # Prevent re-initializing if a concurrent thread already built the browser instance
     if GLOBAL_BROWSER:
         print("[*] Global browser instance already alive. Skipping redundant init pass.")
         return
@@ -169,20 +164,17 @@ async def init_global_browser():
 
 def ensure_background_loop_is_alive():
     global LOOP
-    # Check both initialization status and actively running flags defensively
     if LOOP is None or not LOOP.is_running():
         print("[!] Background event loop detected as OFFLINE. Spawning safe initialization thread...")
         t = threading.Thread(target=start_global_loop, daemon=True)
         t.start()
         
-        # Give the background loop up to 3 seconds to spin up completely
         for _ in range(3):
             if LOOP and LOOP.is_running():
                 print("[SUCCESS] Background event loop successfully recovered and is now ONLINE.")
                 break
             time.sleep(1)
     else:
-        # Loop is healthy, ensure the browser target hasn't crashed or disappeared
         if not GLOBAL_BROWSER:
             print("[!] Loop is online but browser instance is missing. Hot-patching initialization...")
             asyncio.run_coroutine_threadsafe(init_global_browser(), LOOP)
@@ -238,16 +230,17 @@ async def run_homepage_pipeline(log_queue, page, domain_name):
 
 @retry_async_action(retries=3, delay=5)
 async def step_1_add_to_cart(log_queue, page, domain_name):
-    # Extracts the string before the first dot to build the dynamic element selector ID
     prefix = domain_name.split('.')[0]
-    button_selector = f'[id^="transfer-button-{prefix}"]'
-    log_queue.put_nowait(f"[*] [STEP 1/4] Targeting main row button for prefix: {prefix} (Domain: {domain_name})")
+    
+    # Combined selector to intercept elements flagged for both registration or transfer rows dynamically
+    button_selector = f'[id^="register-button-{prefix}"], [id^="transfer-button-{prefix}"], button:has-text("Add to Cart"), button:has-text("Transfer")'
+    log_queue.put_nowait(f"[*] [STEP 1/4] Targeting main action button framework for prefix: {prefix} (Domain: {domain_name})")
     
     button_locator = page.locator(button_selector).first
-    await button_locator.wait_for(state="visible", timeout=10000)
+    await button_locator.wait_for(state="visible", timeout=12000)
     await button_locator.scroll_into_view_if_needed()
     await button_locator.click()
-    log_queue.put_nowait("[SUCCESS] Step 1 complete: Main row action clicked.")
+    log_queue.put_nowait("[SUCCESS] Step 1 complete: Element matched and added to shopping cart array.")
 
 @retry_async_action(retries=3, delay=5)
 async def step_2_remove_addon(log_queue, page):
@@ -304,7 +297,6 @@ async def step_4_inject_form_and_complete(log_queue, page, first_name, last_name
 
     log_queue.put_nowait("[*] Intercepting registration password element arrays...")
     password_fields = page.locator('form.v-form .passField input')
-    
     await password_fields.nth(0).wait_for(state="visible", timeout=15000)
     
     for index in range(2):
@@ -335,7 +327,7 @@ async def step_4_inject_form_and_complete(log_queue, page, first_name, last_name
     log_queue.put_nowait(f"[SUCCESS] Verified Active Form Registration Password: {recovered_password}")
 
     complete_btn = page.locator('form.v-form button .v-btn__content', has_text="Complete registration").first
-    complete_btn.scroll_into_view_if_needed()
+    await complete_btn.scroll_into_view_if_needed()
     
     log_queue.put_nowait("[*] Dispatching system submit action click downstream...")
     await complete_btn.click()
@@ -371,11 +363,8 @@ async def stream_integrated_workflow(log_queue, auth_username, custom_domain, fi
         log_queue.put_nowait("DONE")
         return
 
-    # Use exact string from request (preserves typed subdomains, .ke, .com, etc.)
     domain_name = custom_domain.strip().lower()
     loop = asyncio.get_event_loop()
-
-    # Dynamic pricing injection from local caching framework
     price_metrics = get_cached_prices_for_domain(domain_name)
 
     # =========================================================================
@@ -396,101 +385,103 @@ async def stream_integrated_workflow(log_queue, auth_username, custom_domain, fi
         "renewal_price": price_metrics["renewal_price"]
     }
     
-    # Push to Supabase immediately and get back the unique generated row key
     db_record_id = await loop.run_in_executor(None, sync_domain_record_to_web, initial_payload)
     if db_record_id:
         log_queue.put_nowait(f"[SUCCESS] Tracking record live. Record ID Reference: {db_record_id}")
     else:
         log_queue.put_nowait("[WARN] Failed to establish early tracking hook. Continuing execution...")
 
-    # Begin browser setup
     log_queue.put_nowait("[*] Spawning clean localized browser context...")
-    context = await GLOBAL_BROWSER.new_context(
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/124.0.0.0 Safari/537.36",
-        viewport={'width': 1920, 'height': 1080}
-    )
     
-    page = await context.new_page()
-
     try:
-        await run_homepage_pipeline(log_queue, page, domain_name)
-        await step_1_add_to_cart(log_queue, page, domain_name)
-        await asyncio.sleep(1.5)
-        
-        await step_2_remove_addon(log_queue, page)
-        await asyncio.sleep(1.5)
-        
-        await step_3_click_pay_and_bypass_popup(log_queue, page)
-        await asyncio.sleep(1.5)
-        
-        password_captured = await step_4_inject_form_and_complete(log_queue, page, first_name, last_name, custom_email, custom_phone, custom_password)
-        
-        log_queue.put_nowait("[*] Awaiting payment processing system confirmation redirect...")
-        invoice_url = ""
-        invoice_id = "UNKNOWN"
-        is_invoice_found = False
-        
-        for _ in range(30):
-            await asyncio.sleep(1)
-            current_url = page.url
-            if "viewinvoice.php" in current_url:
-                invoice_url = current_url
-                log_queue.put_nowait(f"[SUCCESS] Checkout complete. Found Invoice Destination Link: {invoice_url}")
-                
-                id_match = re.search(r'id=(\d+)', current_url)
-                if id_match:
-                    invoice_id = id_match.group(1)
-                    log_queue.put_nowait(f"[*] Parsed Invoice Core ID Reference: {invoice_id}")
-                
-                is_invoice_found = True
-                break
-        
-        if is_invoice_found:
-            if payment_method == "stk":
-                log_queue.put_nowait("[*] User configuration targeted: M-PESA Express (STK Prompt Mode)")
-                await trigger_mpesa_express_stk_push(log_queue, page)
-                
-                log_queue.put_nowait("[*] Commencing 45-second countdown runtime loop window for manual M-PESA handset confirmation...")
-                for seconds_left in range(45, 0, -5):
-                    log_queue.put_nowait(f"[WAITING] Holding automation link open. Channel shuts down in {seconds_left} seconds...")
-                    await asyncio.sleep(5)
-            else:
-                log_queue.put_nowait("[SUCCESS] User configuration targeted: Manual Paybill Presentation. Skipping automated STK phone injection loops.")
-        else:
-            log_queue.put_nowait("[WARN] Failed to intercept structural invoice panel context within time boundaries.")
-        
-        # =========================================================================
-        # PHASE 2: FINAL DATA UPDATE (Patches missing details, changes status to SUCCESS)
-        # =========================================================================
-        final_payload = {
-            "username": auth_username,
-            "domain": domain_name,
-            "email": custom_email,
-            "password": password_captured if password_captured else custom_password,
-            "invoice_url": invoice_url if invoice_url else "Timeout Redirect",
-            "invoice_id": invoice_id,
-            "payment_method": payment_method,
-            "status": "SUCCESS",
-            "timestamp": int(time.time()),
-            "category": price_metrics["category"],
-            "registration_price": price_metrics["registration_price"],
-            "renewal_price": price_metrics["renewal_price"]
-        }
-        log_queue.put_nowait(f"FINAL_RESULT:{json.dumps(final_payload)}")
+        # Strict global runtime cutoff (3 minutes max execution envelope to prevent orphan locks)
+        async with asyncio.timeout(180):
+            context = await GLOBAL_BROWSER.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/124.0.0.0 Safari/537.36",
+                viewport={'width': 1920, 'height': 1080}
+            )
+            page = await context.new_page()
 
-        if db_record_id:
-            log_queue.put_nowait("[*] Storage Pipeline: Finalizing record status on remote Supabase structures...")
-            sync_success = await loop.run_in_executor(None, sync_domain_record_to_web, final_payload, db_record_id)
+            await run_homepage_pipeline(log_queue, page, domain_name)
+            await step_1_add_to_cart(log_queue, page, domain_name)
+            await asyncio.sleep(1.5)
             
-            if sync_success:
-                log_queue.put_nowait("[SUCCESS] Registration state successfully marked as complete on database.")
+            await step_2_remove_addon(log_queue, page)
+            await asyncio.sleep(1.5)
+            
+            await step_3_click_pay_and_bypass_popup(log_queue, page)
+            await asyncio.sleep(1.5)
+            
+            password_captured = await step_4_inject_form_and_complete(log_queue, page, first_name, last_name, custom_email, custom_phone, custom_password)
+            
+            log_queue.put_nowait("[*] Awaiting payment processing system confirmation redirect...")
+            invoice_url = ""
+            invoice_id = "UNKNOWN"
+            is_invoice_found = False
+            
+            for _ in range(30):
+                await asyncio.sleep(1)
+                current_url = page.url
+                if "viewinvoice.php" in current_url:
+                    invoice_url = current_url
+                    log_queue.put_nowait(f"[SUCCESS] Checkout complete. Found Invoice Destination Link: {invoice_url}")
+                    
+                    id_match = re.search(r'id=(\d+)', current_url)
+                    if id_match:
+                        invoice_id = id_match.group(1)
+                        log_queue.put_nowait(f"[*] Parsed Invoice Core ID Reference: {invoice_id}")
+                    
+                    is_invoice_found = True
+                    break
+            
+            if is_invoice_found:
+                if payment_method == "stk":
+                    log_queue.put_nowait("[*] User configuration targeted: M-PESA Express (STK Prompt Mode)")
+                    await trigger_mpesa_express_stk_push(log_queue, page)
+                    
+                    log_queue.put_nowait("[*] Commencing 45-second countdown runtime loop window for manual M-PESA handset confirmation...")
+                    for seconds_left in range(45, 0, -5):
+                        log_queue.put_nowait(f"[WAITING] Holding automation link open. Channel shuts down in {seconds_left} seconds...")
+                        await asyncio.sleep(5)
+                else:
+                    log_queue.put_nowait("[SUCCESS] User configuration targeted: Manual Paybill Presentation. Skipping automated STK phone injection loops.")
             else:
-                log_queue.put_nowait("[WARN] Local execution finished, but Supabase final patch update route failed.")
-        else:
-            # Fallback to standard insert if initial creation missed its hook earlier
-            log_queue.put_nowait("[*] Storage Pipeline Fallback: Performing standard direct row creation hook...")
-            await loop.run_in_executor(None, sync_domain_record_to_web, final_payload)
+                log_queue.put_nowait("[WARN] Failed to intercept structural invoice panel context within time boundaries.")
+            
+            # =========================================================================
+            # PHASE 2: FINAL DATA UPDATE (Patches missing details, status -> SUCCESS)
+            # =========================================================================
+            final_payload = {
+                "username": auth_username,
+                "domain": domain_name,
+                "email": custom_email,
+                "password": password_captured if password_captured else custom_password,
+                "invoice_url": invoice_url if invoice_url else "Timeout Redirect",
+                "invoice_id": invoice_id,
+                "payment_method": payment_method,
+                "status": "SUCCESS",
+                "timestamp": int(time.time()),
+                "category": price_metrics["category"],
+                "registration_price": price_metrics["registration_price"],
+                "renewal_price": price_metrics["renewal_price"]
+            }
+            log_queue.put_nowait(f"FINAL_RESULT:{json.dumps(final_payload)}")
 
+            if db_record_id:
+                log_queue.put_nowait("[*] Storage Pipeline: Finalizing record status on remote Supabase structures...")
+                await loop.run_in_executor(None, sync_domain_record_to_web, final_payload, db_record_id)
+            else:
+                log_queue.put_nowait("[*] Storage Pipeline Fallback: Performing standard direct row creation hook...")
+                await loop.run_in_executor(None, sync_domain_record_to_web, final_payload)
+
+    except TimeoutError:
+        log_queue.put_nowait("[CRITICAL FAILURE] Automation session timed out (exceeded 180 seconds threshold). Execution dropped.")
+        if db_record_id:
+            try:
+                failure_payload = {"status": "FAILED", "invoice_url": "Automation script dropped due to overall timeout error."}
+                await loop.run_in_executor(None, sync_domain_record_to_web, failure_payload, db_record_id)
+            except Exception:
+                pass
     except Exception as workflow_error:
         log_queue.put_nowait(f"[CRITICAL FAILURE] Integrated pipeline collapsed: {workflow_error}")
         if db_record_id:
@@ -500,7 +491,8 @@ async def stream_integrated_workflow(log_queue, auth_username, custom_domain, fi
             except Exception:
                 pass
     finally:
-        await context.close()
+        if 'context' in locals():
+            await context.close()
         log_queue.put_nowait("DONE")
 
 
@@ -511,16 +503,13 @@ async def stream_domain_check_workflow(log_queue, custom_domain):
         log_queue.put_nowait("DONE")
         return
 
-    # Clean the input domain and separate sld and tld parameters safely
     full_target_domain = custom_domain.strip().lower()
     
-    # Matches common domain configurations to extract sld and tld
     domain_match = re.match(r'^([^.]+)(?:\.(co\.ke|ke|com|net|org|xyz|biz))$', full_target_domain)
     if domain_match:
         sld_param = domain_match.group(1)
         tld_param = f".{domain_match.group(2)}"
     else:
-        # Graceful fallback if non-standard or highly nested subdomains are checked
         sld_param = full_target_domain.split('.')[0]
         tld_param = "." + ".".join(full_target_domain.split('.')[1:])
 
@@ -548,8 +537,6 @@ async def stream_domain_check_workflow(log_queue, custom_domain):
         
         results_matrix = []
         is_target_handled = False
-
-        # Access local hardcoded values directly for fallback/injection context match
         live_prices = get_cached_prices_for_domain(full_target_domain)
 
         internal_msg = soup.find("div", class_="v-messages__message")
@@ -571,8 +558,6 @@ async def stream_domain_check_workflow(log_queue, custom_domain):
                 continue
                 
             found_domain = domain_name_tag.text.strip().lower()
-            
-            # Fetch dynamic metrics for the row item
             row_prices = get_cached_prices_for_domain(found_domain)
             
             price_span = row.find("span", class_="text-nowrap")
