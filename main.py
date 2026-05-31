@@ -248,6 +248,8 @@ def start_background_registration():
         ACTIVE_TASKS[task_id] = {
             "status": "PROCESSING",
             "domain": custom_domain,
+            "email": custom_email,
+            "password": custom_password,
             "category": price_metrics["category"],
             "registration_price": price_metrics["registration_price"],
             "renewal_price": price_metrics["renewal_price"],
@@ -315,8 +317,7 @@ def lookup_domain_record():
     """
     Secure endpoint to fetch structural transaction updates directly from the 
     Supabase domain_records matrix layout. Requires username, domain, and a matching valid API key.
-    Calculates dynamic countdown timers, formats login credentials, and bundles hardcoded M-Pesa 
-    Paybill details along with invoice metrics on-the-fly.
+    If the worker row is initializing and not committed to Supabase yet, falls back safely to ACTIVE_TASKS cache.
     """
     username = request.args.get('username', '').strip()
     domain = request.args.get('domain', '').strip()
@@ -339,70 +340,118 @@ def lookup_domain_record():
             },
             method='GET'
         )
-        with urllib.request.urlopen(req, timeout=12) as response:
-            records = json.loads(response.read().decode('utf-8'))
+        
+        records = []
+        try:
+            with urllib.request.urlopen(req, timeout=12) as response:
+                records = json.loads(response.read().decode('utf-8'))
+        except Exception as http_err:
+            print(f"[LOOKUP WARNING] Supabase direct connection failed or dropped: {http_err}")
+            # Do not fail immediately; fallback below can verify memory thread layout states
+
+        now_ts = int(time.time())
+
+        # --- FALLBACK COLD-START HANDSHAKE MECHANISM ---
+        # If database returns nothing, verify if an active registration task exists in local engine memory
+        if not records:
+            matched_task = None
+            with tasks_lock:
+                for tid, task_data in ACTIVE_TASKS.items():
+                    if task_data.get("domain", "").lower() == domain.lower():
+                        matched_task = task_data.copy()
+                        break
             
-            if not records:
-                return jsonify({"status": "NOT_FOUND", "message": f"No active data row footprints registered for domain '{domain}' under user context."}), 404
-                
-            processed_records = []
-            now_ts = int(time.time())
-            
-            for item in records:
-                # 1. Parse created_at timestamp securely to handle ISO formatting variants
-                raw_created = item.get("created_at", "")
-                try:
-                    clean_created = raw_created.replace("Z", "").split("+")[0]
-                    dt_created = datetime.fromisoformat(clean_created).replace(tzinfo=timezone.utc)
-                    created_ts = int(dt_created.timestamp())
-                except Exception:
-                    created_ts = item.get("timestamp", now_ts)
-                
-                # 2. Calculate Domain Availability Time Horizon (exactly 3 minutes after creation)
+            if matched_task:
+                # Compile immediate initializing response payload directly from memory state layout
+                created_ts = matched_task.get("started_at", now_ts)
                 available_in_ts = created_ts + 180
-                time_remaining = available_in_ts - now_ts
-                if time_remaining < 0:
-                    time_remaining = 0
+                time_remaining = max(0, available_in_ts - now_ts)
+                iso_created = datetime.fromtimestamp(created_ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
                 
-                # 3. Compile the response structure mapping out requested objects
-                invoice_id = item.get("invoice_id")
-                registration_price = item.get("registration_price")
-                
-                computed_item = {
-                    "id": item.get("id"),
-                    "domain": item.get("domain"),
-                    "invoice_id": invoice_id,
-                    "invoice_url": item.get("invoice_url"),
+                initializing_record = {
+                    "id": None,
+                    "domain": matched_task.get("domain"),
+                    "invoice_id": "INITIALIZING",
+                    "invoice_url": "INITIALIZING",
                     "login_credentials": {
-                        "email": item.get("email"),
-                        "password": item.get("password")
+                        "email": matched_task.get("email"),
+                        "password": matched_task.get("password")
                     },
                     "payment_details": {
                         "paybill_number": "890500",
-                        "account_number": invoice_id,
-                        "amount_payable": registration_price
+                        "account_number": "PENDING",
+                        "amount_payable": matched_task.get("registration_price")
                     },
-                    "category": item.get("category"),
-                    "payment_method": item.get("payment_method"),
-                    "status": item.get("status"),
-                    "username": item.get("username"),
-                    "time_created": raw_created,
-                    "timestamp": item.get("timestamp"),
+                    "category": matched_task.get("category"),
+                    "payment_method": "paybill",
+                    "status": "INITIALIZING",
+                    "username": username,
+                    "time_created": iso_created,
+                    "timestamp": created_ts,
                     "domain_available_in": datetime.fromtimestamp(available_in_ts, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
                     "time_remaining_seconds": time_remaining,
-                    "renewal_price": item.get("renewal_price") # Put outside as the last field
+                    "renewal_price": matched_task.get("renewal_price")
                 }
-                processed_records.append(computed_item)
+                return jsonify({
+                    "status": "SUCCESS",
+                    "count": 1,
+                    "data": [initializing_record]
+                }), 200
+            else:
+                return jsonify({"status": "NOT_FOUND", "message": f"No structural record layouts registered for domain '{domain}' under user context."}), 404
+                
+        # --- NORMAL SUPABASE DATA PROCESSING LOOP ---
+        processed_records = []
+        for item in records:
+            raw_created = item.get("created_at", "")
+            try:
+                clean_created = raw_created.replace("Z", "").split("+")[0]
+                dt_created = datetime.fromisoformat(clean_created).replace(tzinfo=timezone.utc)
+                created_ts = int(dt_created.timestamp())
+            except Exception:
+                created_ts = item.get("timestamp", now_ts)
+            
+            available_in_ts = created_ts + 180
+            time_remaining = max(0, available_in_ts - now_ts)
+            
+            invoice_id = item.get("invoice_id")
+            registration_price = item.get("registration_price")
+            
+            computed_item = {
+                "id": item.get("id"),
+                "domain": item.get("domain"),
+                "invoice_id": invoice_id,
+                "invoice_url": item.get("invoice_url"),
+                "login_credentials": {
+                    "email": item.get("email"),
+                    "password": item.get("password")
+                },
+                "payment_details": {
+                    "paybill_number": "890500",
+                    "account_number": invoice_id,
+                    "amount_payable": registration_price
+                },
+                "category": item.get("category"),
+                "payment_method": item.get("payment_method"),
+                "status": item.get("status"),
+                "username": item.get("username"),
+                "time_created": raw_created,
+                "timestamp": item.get("timestamp"),
+                "domain_available_in": datetime.fromtimestamp(available_in_ts, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+                "time_remaining_seconds": time_remaining,
+                "renewal_price": item.get("renewal_price")
+            }
+            processed_records.append(computed_item)
 
-            return jsonify({
-                "status": "SUCCESS",
-                "count": len(processed_records),
-                "data": processed_records
-            }), 200
+        return jsonify({
+            "status": "SUCCESS",
+            "count": len(processed_records),
+            "data": processed_records
+        }), 200
 
     except Exception as e:
-        print(f"[LOOKUP ERROR] Direct backend database mapping access failed: {e}")
-        return jsonify({"status": "ERROR", "message": f"Supabase sync target dropped: {str(e)}"}), 500
+        print(f"[LOOKUP ERROR] Engine core execution context failed: {e}")
+        return jsonify({"status": "ERROR", "message": f"Server transaction tracking error: {str(e)}"}), 500
 
 
 @app.route('/api/check_available', methods=['POST'])
@@ -434,7 +483,6 @@ def check_domain_availability_endpoint():
         if result.get("status") == "ERROR":
             return jsonify({"status": "ERROR", "message": f"Could not verify domain: {result.get('message')}"}), 500
             
-        # Append fixed registration and renewal matrix configurations directly to payload response
         price_metrics = match_pricing_for_domain(domain)
         result["category"] = price_metrics["category"]
         result["registration_price"] = price_metrics["registration_price"]
