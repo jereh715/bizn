@@ -118,9 +118,11 @@ def sync_domain_record_to_web(payload, record_id=None):
 def start_global_loop():
     global LOOP
     try:
+        # Check if an event loop is already assigned and running in this execution context
         LOOP = asyncio.get_running_loop()
         print("[*] Hooked into an existing running event loop context.")
     except RuntimeError:
+        # No loop is running in this thread context yet; safe to handle or attach
         if LOOP is None:
             try:
                 LOOP = asyncio.get_event_loop()
@@ -128,6 +130,7 @@ def start_global_loop():
                 LOOP = asyncio.new_event_loop()
                 asyncio.set_event_loop(LOOP)
     
+    # Run initialization sequences safely inside the configured loop
     if not LOOP.is_running():
         LOOP.run_until_complete(init_global_browser())
         try:
@@ -138,11 +141,13 @@ def start_global_loop():
             else:
                 raise e
     else:
+        # If the loop was already running, schedule the browser initialization coroutine dynamically
         print("[*] Event loop active. Scheduling global browser initialization...")
         asyncio.run_coroutine_threadsafe(init_global_browser(), LOOP)
 
 async def init_global_browser():
     global GLOBAL_P, GLOBAL_BROWSER
+    # Prevent re-initializing if a concurrent thread already built the browser instance
     if GLOBAL_BROWSER:
         print("[*] Global browser instance already alive. Skipping redundant init pass.")
         return
@@ -164,17 +169,20 @@ async def init_global_browser():
 
 def ensure_background_loop_is_alive():
     global LOOP
+    # Check both initialization status and actively running flags defensively
     if LOOP is None or not LOOP.is_running():
         print("[!] Background event loop detected as OFFLINE. Spawning safe initialization thread...")
         t = threading.Thread(target=start_global_loop, daemon=True)
         t.start()
         
+        # Give the background loop up to 3 seconds to spin up completely
         for _ in range(3):
             if LOOP and LOOP.is_running():
                 print("[SUCCESS] Background event loop successfully recovered and is now ONLINE.")
                 break
             time.sleep(1)
     else:
+        # Loop is healthy, ensure the browser target hasn't crashed or disappeared
         if not GLOBAL_BROWSER:
             print("[!] Loop is online but browser instance is missing. Hot-patching initialization...")
             asyncio.run_coroutine_threadsafe(init_global_browser(), LOOP)
@@ -224,24 +232,18 @@ async def run_homepage_pipeline(log_queue, page, domain_name):
     log_queue.put_nowait("[*] Simulating form submission via availability check...")
     await page.click(submit_button_selector)
     
-    log_queue.put_nowait("[*] Waiting for redirect pipeline to land and network to settle on my.hostafrica.com...")
-    # Swapped to networkidle to guarantee Vue/Vuetify async chunk assets have hydrated completely
-    await page.wait_for_load_state("networkidle", timeout=30000)
+    log_queue.put_nowait("[*] Waiting for redirect pipeline to land on my.hostafrica.com...")
+    await page.wait_for_load_state("domcontentloaded")
     log_queue.put_nowait("[SUCCESS] Redirect completed! Sitting on checkout page.")
 
 @retry_async_action(retries=3, delay=5)
 async def step_1_add_to_cart(log_queue, page, domain_name):
-    # FIX: HostAfrica normalizes domain dashes/hyphens to underscores inside the element IDs.
-    prefix = domain_name.split('.')[0].replace('-', '_')
+    # Extracts the string before the first dot to build the dynamic element selector ID
+    prefix = domain_name.split('.')[0]
     button_selector = f'[id^="transfer-button-{prefix}"]'
     log_queue.put_nowait(f"[*] [STEP 1/4] Targeting main row button for prefix: {prefix} (Domain: {domain_name})")
     
-    # Extra check: Ensure network is quiet so rows are fully compiled
-    await page.wait_for_load_state("networkidle", timeout=15000)
-    
     button_locator = page.locator(button_selector).first
-    # Two-stage check: Wait until attached to DOM tree, then wait until visible to the view matrix
-    await button_locator.wait_for(state="attached", timeout=10000)
     await button_locator.wait_for(state="visible", timeout=10000)
     await button_locator.scroll_into_view_if_needed()
     await button_locator.click()
@@ -263,23 +265,16 @@ async def step_2_remove_addon(log_queue, page):
 @retry_async_action(retries=3, delay=5)
 async def step_3_click_pay_and_bypass_popup(log_queue, page):
     log_queue.put_nowait("[*] [STEP 3/4] Locating 'Pay Now' submission interface container...")
-    
-    # FIX: Targeted the interactive button node directly, checking for attached + visible states
-    pay_now_locator = page.locator('button:has-text("Pay Now")').first
-    await pay_now_locator.wait_for(state="attached", timeout=15000)
-    await pay_now_locator.wait_for(state="visible", timeout=15000)
+    pay_now_locator = page.locator('button .v-btn__content', has_text="Pay Now").first
+    await pay_now_locator.wait_for(state="visible", timeout=10000)
     await pay_now_locator.scroll_into_view_if_needed()
-    
-    # Force click bypasses hidden clipping issues caused by temporary Vuetify overlay loaders
-    await pay_now_locator.click(force=True)
+    await pay_now_locator.click()
     log_queue.put_nowait("[SUCCESS] 'Pay Now' clicked. Awaiting domain privacy up-sell popup window...")
     
-    await page.wait_for_load_state("domcontentloaded")
-    await asyncio.sleep(4)
+    await asyncio.sleep(5)
     
-    # FIX: Native button text match instead of searching inside internal spans
-    no_thanks_locator = page.locator('button:has-text("no, thank you")').first
-    await no_thanks_locator.wait_for(state="visible", timeout=10000)
+    no_thanks_locator = page.locator('span.v-btn__content', has_text="no, thank you").first
+    await no_thanks_locator.wait_for(state="visible", timeout=5000)
     await no_thanks_locator.click()
     log_queue.put_nowait("[SUCCESS] Step 3 complete: Pop-up bypassed via 'no, thank you'. Proceeding to form...")
 
@@ -376,9 +371,11 @@ async def stream_integrated_workflow(log_queue, auth_username, custom_domain, fi
         log_queue.put_nowait("DONE")
         return
 
+    # Use exact string from request (preserves typed subdomains, .ke, .com, etc.)
     domain_name = custom_domain.strip().lower()
     loop = asyncio.get_event_loop()
 
+    # Dynamic pricing injection from local caching framework
     price_metrics = get_cached_prices_for_domain(domain_name)
 
     # =========================================================================
@@ -399,12 +396,14 @@ async def stream_integrated_workflow(log_queue, auth_username, custom_domain, fi
         "renewal_price": price_metrics["renewal_price"]
     }
     
+    # Push to Supabase immediately and get back the unique generated row key
     db_record_id = await loop.run_in_executor(None, sync_domain_record_to_web, initial_payload)
     if db_record_id:
         log_queue.put_nowait(f"[SUCCESS] Tracking record live. Record ID Reference: {db_record_id}")
     else:
         log_queue.put_nowait("[WARN] Failed to establish early tracking hook. Continuing execution...")
 
+    # Begin browser setup
     log_queue.put_nowait("[*] Spawning clean localized browser context...")
     context = await GLOBAL_BROWSER.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -488,6 +487,7 @@ async def stream_integrated_workflow(log_queue, auth_username, custom_domain, fi
             else:
                 log_queue.put_nowait("[WARN] Local execution finished, but Supabase final patch update route failed.")
         else:
+            # Fallback to standard insert if initial creation missed its hook earlier
             log_queue.put_nowait("[*] Storage Pipeline Fallback: Performing standard direct row creation hook...")
             await loop.run_in_executor(None, sync_domain_record_to_web, final_payload)
 
@@ -511,13 +511,16 @@ async def stream_domain_check_workflow(log_queue, custom_domain):
         log_queue.put_nowait("DONE")
         return
 
+    # Clean the input domain and separate sld and tld parameters safely
     full_target_domain = custom_domain.strip().lower()
     
+    # Matches common domain configurations to extract sld and tld
     domain_match = re.match(r'^([^.]+)(?:\.(co\.ke|ke|com|net|org|xyz|biz))$', full_target_domain)
     if domain_match:
         sld_param = domain_match.group(1)
         tld_param = f".{domain_match.group(2)}"
     else:
+        # Graceful fallback if non-standard or highly nested subdomains are checked
         sld_param = full_target_domain.split('.')[0]
         tld_param = "." + ".".join(full_target_domain.split('.')[1:])
 
@@ -546,6 +549,7 @@ async def stream_domain_check_workflow(log_queue, custom_domain):
         results_matrix = []
         is_target_handled = False
 
+        # Access local hardcoded values directly for fallback/injection context match
         live_prices = get_cached_prices_for_domain(full_target_domain)
 
         internal_msg = soup.find("div", class_="v-messages__message")
@@ -568,6 +572,7 @@ async def stream_domain_check_workflow(log_queue, custom_domain):
                 
             found_domain = domain_name_tag.text.strip().lower()
             
+            # Fetch dynamic metrics for the row item
             row_prices = get_cached_prices_for_domain(found_domain)
             
             price_span = row.find("span", class_="text-nowrap")
