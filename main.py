@@ -10,11 +10,10 @@ app = Flask(__name__)
 CORS(app)
 sock = Sock(app)
 
-# Local Pinggy HTTP proxy tunnel URL
-# Replace with your current active Pinggy URL, or pass via environment variable
+# Updated Local Tunnel HTTP Proxy URL
 LOCAL_HOME_PROXY = os.environ.get(
     "LOCAL_HOME_PROXY", 
-    "https://lszxs-197-237-36-88.free.pinggy.net"
+    "https://flat-jars-tell.loca.lt"
 )
 
 # Embedded Single-Page Client App
@@ -216,7 +215,6 @@ async def handle_browser_session(ws):
             loop = asyncio.get_running_loop()
             try:
                 while not stop_signal:
-                    # Offload blocking WebSocket receive to executor to keep async loop fluid
                     raw_data = await loop.run_in_executor(None, ws.receive)
                     if raw_data is None:
                         stop_signal = True
@@ -230,10 +228,18 @@ async def handle_browser_session(ws):
                         if new_state != is_proxy_enabled:
                             is_proxy_enabled = new_state
                             current_url = page.url
-                            await context.close()
-                            context, page = await create_new_context(use_proxy=is_proxy_enabled)
-                            if current_url and current_url != "about:blank":
-                                await page.goto(current_url)
+                            try:
+                                await context.close()
+                                context, page = await create_new_context(use_proxy=is_proxy_enabled)
+                                if current_url and current_url != "about:blank":
+                                    await page.goto(current_url, timeout=20000)
+                            except Exception as err:
+                                print(f"[!] Proxy toggle failed: {err}")
+                                # Fall back to direct Render connection on connection failure
+                                is_proxy_enabled = False
+                                context, page = await create_new_context(use_proxy=False)
+                                if current_url and current_url != "about:blank":
+                                    await page.goto(current_url)
 
                     elif event_type == "navigate":
                         await page.goto(event["url"], timeout=30000)
